@@ -1128,11 +1128,11 @@ foreach ($kv in $uninstallReaders.GetEnumerator()) {
 # A bare read of an Uninstall subkey is what caused the failure, so none of the
 # four may reintroduce it. A named read names the values it wants; that is the
 # whole difference.
-$bareUninstall = "Get-ItemProperty[^\r\n]*\$_.PSPath\s*\r?\n"
+$bareUninstall = 'Get-ItemProperty[^\r\n]*\$_\.PSPath\s*\r?\n'
 foreach ($kv in $uninstallReaders.GetEnumerator()) {
     Assert-False ($kv.Value -match $bareUninstall) ($kv.Key + ": no bare Get-ItemProperty on an Uninstall subkey")
 }
-Assert-True ($checksText -match "-Name \$Names") "uninstall read: the reader names the values instead of reading the whole key"
+Assert-True ($checksText -match '-Name \$Names') "uninstall read: the reader names the values instead of reading the whole key"
 Assert-True ($checksText -match "function Get-UninstallEntry") "the defensive reader is defined"
 
 # The helper returns only the values it was asked for. A caller reading a
