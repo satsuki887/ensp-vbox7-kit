@@ -9,7 +9,27 @@
 |------|------|
 | `patch_var_plugin.py`   | 施加 / 还原 VAR_Plugin.dll 的 vtable 重映射 |
 | `patch_ngfw_plugin.py`  | 施加 / 还原 NGFW_Plugin.dll 的 vtable 重映射 |
+| `patch_pcap_version.py` | 让 Cloud 插件 / eNSP_Client 把任何抓包驱动当成 WinPcap 4.x（Cloud 支持 Npcap） |
 | `var_plugin_ar1000v.md` | 完整规格：28 个调用站点、槽位推导、指令形态 |
+
+## eNSP_Cloud_Plugin.dll / eNSP_Client.exe（Cloud + Npcap）—— 待真机验证，不在安装范围内
+
+这两个模块用 `PacketGetVersion()[0] - '0' == 4` 判断网卡列表的编码和 `NetType` 的布局。Npcap
+返回 `"1.89"`，主版本被算成 1，网卡全被丢弃，Cloud 只剩 UDP。补丁器把算主版本的那条指令
+改成 `mov reg, 4`（每个文件 6 字节），WinPcap 4.x 下行为不变。`--devices` 会连
+AR / S3700 / S5700 / USG5500 的宿主侧设备进程一起补（同样的检查，目前没对应到可见症状）。
+原理、补丁表与验证步骤见 [`docs/findings/cloud-npcap.md`](../docs/findings/cloud-npcap.md)。
+
+```bat
+:: 查看（只读）
+python patch_pcap_version.py --check
+:: 打补丁（需管理员、先关闭 eNSP；默认路径 C:\Program Files\Huawei\eNSP，可作为参数传入）
+python patch_pcap_version.py
+:: 还原
+python patch_pcap_version.py --restore
+```
+
+安全保证同下：只认已知的出厂 / 补丁后 SHA-256，写前逐字节核对，默认留 `.bak`。
 
 ## VAR_Plugin.dll（ar1000v）
 
