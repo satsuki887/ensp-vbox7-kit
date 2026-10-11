@@ -220,6 +220,73 @@ function Grant-VBoxServerWrite([string]$EnspDir, [string]$GrantSid) {
 }
 
 # ---------------------------------------------------------------------------
+# SVRP 设备(CE / CX / NE40E / NE5000E / NE9000)关机崩溃的修法
+#
+# 这些 VM 的 1 号网卡是"未连接(null)+ virtio"。VirtualBox 7.x 的 virtio-net
+# 在没挂驱动时,发送循环只 peek 描述符、从不消费(DevVirtioNet.cpp
+# virtioNetR3TransmitPkts 里消费逻辑都在 if (pThisCC->pDrv) 之内):客机往
+# 这块卡发出第一个包后,legacy-xmitq 线程就一直空转占满 1 核,power off 时挂不
+# 起来 -> 等满 60 s 超时 -> 销毁阶段再卡 120 s -> VBoxDD.DLL 访问违例崩溃。
+# 把它改挂到一个只有它自己的内部网络:客机看到的网卡与链路状态都不变,发出的帧
+# 被 intnet 接走丢弃。2026-10-11 用 CE 的克隆实测:空转消失,power off 0.26 s。
+# 详见 docs/findings/svrp-shutdown-crash.md。
+#
+# 只动配置文件在 eNSP 目录下、且 nicN=null + nictypeN=virtio 的 VM;intnet 名
+# 带 ensp-unused- 前缀,卸载时据此认出并改回 null。必须在提权侧跑:这些 VM 的
+# .xml 在 Program Files 里,而 eNSP(RUNASADMIN)用的也是提权的 VBoxSVC。
+# ---------------------------------------------------------------------------
+$UNUSED_INTNET_PREFIX = "ensp-unused-"
+
+# 这两个函数里的 VBoxManage 调用都把 $ErrorActionPreference 局部降为 Continue:
+# Windows PowerShell 5.1 在 Stop 下会把原生命令的 stderr(哪怕 2>$null)变成终止
+# 错误,一台 inaccessible 的 VM 或一次 modifyvm 失败就会中断整个安装。
+function Get-VmInfoMap([string]$Vbm, [string]$Vm) {
+    $ErrorActionPreference = "Continue"
+    $map = @{}
+    foreach ($l in @(& $Vbm showvminfo $Vm --machinereadable 2>$null)) {
+        $m = [regex]::Match("$l", '^"?([^"=]+)"?="?(.*?)"?$')
+        if ($m.Success) { $map[$m.Groups[1].Value] = $m.Groups[2].Value }
+    }
+    return $map
+}
+
+function Set-UnattachedVirtioNics {
+    param([string]$VBoxDir, [string]$EnspDir, [switch]$Revert)
+    $ErrorActionPreference = "Continue"
+    $vbm = Join-Path $VBoxDir "VBoxManage.exe"
+    if (-not $VBoxDir -or -not (Test-Path $vbm)) { Write-Warn "未找到 VBoxManage.exe,跳过。"; return }
+    $root = (Resolve-Path $EnspDir).Path.TrimEnd('\') + '\'
+    $changed = 0
+    foreach ($l in @(& $vbm list vms 2>$null)) {
+        $m = [regex]::Match("$l", '\{([0-9a-fA-F-]+)\}\s*$')
+        if (-not $m.Success) { continue }
+        $info = Get-VmInfoMap $vbm $m.Groups[1].Value
+        $cfg = $info["CfgFile"] -replace '\\\\', '\'
+        if (-not $cfg -or -not $cfg.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        $name = $info["name"]
+        $mods = @()
+        for ($n = 1; $n -le 8; $n++) {
+            if ($Revert) {
+                if ($info["nic$n"] -eq "intnet" -and "$($info["intnet$n"])".StartsWith($UNUSED_INTNET_PREFIX)) {
+                    $mods += @("--nic$n", "null")
+                }
+            } elseif ($info["nic$n"] -eq "null" -and $info["nictype$n"] -eq "virtio") {
+                $mods += @("--nic$n", "intnet", "--intnet$n", "$UNUSED_INTNET_PREFIX$name-nic$n")
+            }
+        }
+        if ($mods.Count -eq 0) { continue }
+        if (@("poweroff", "aborted") -notcontains $info["VMState"]) {
+            Write-Warn "$name 当前状态为 $($info["VMState"]),跳过(请关闭 eNSP 后重跑)。"
+            continue
+        }
+        & $vbm modifyvm $info["UUID"] @mods 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) { Write-OK "$name : $($mods -join ' ')"; $changed++ }
+        else { Write-Err "$name : modifyvm 失败(rc=$LASTEXITCODE)" }
+    }
+    if ($changed -eq 0) { Write-OK "无需改动(没有符合条件的网卡)" }
+}
+
+# ---------------------------------------------------------------------------
 # 注册表写入辅助(两个视图)
 # ---------------------------------------------------------------------------
 function Set-RegValue($Path, $Name, $Value) {
@@ -449,7 +516,7 @@ function Invoke-AgreedRepairs {
 function Do-Install {
     param([string]$EnspDir, [string]$VBoxDir, [string]$GrantSid = "")
 
-    Write-Step "1/6 部署 VBox52.dll 垫片(覆盖全部加载位置)"
+    Write-Step "1/7 部署 VBox52.dll 垫片(覆盖全部加载位置)"
     $vboxDirs = @(
         (Join-Path $EnspDir "tools"),
         (Join-Path $EnspDir "vboxserver"),
@@ -460,14 +527,14 @@ function Do-Install {
         Deploy-PayloadFile $DLL_NAME (Join-Path $dir $DLL_NAME) $DLL_SHA256
     }
 
-    Write-Step "2/6 写入版本伪装(注册表 $SPOOF_VER)"
+    Write-Step "2/7 写入版本伪装(注册表 $SPOOF_VER)"
     Set-RegValue "HKLM:\SOFTWARE\Oracle\VirtualBox"            "Version"    $SPOOF_VER
     Set-RegValue "HKLM:\SOFTWARE\Oracle\VirtualBox"            "VersionExt" $SPOOF_VEREXT
     Set-RegValue "HKLM:\SOFTWARE\WOW6432Node\Oracle\VirtualBox" "Version"    $SPOOF_VER
     Set-RegValue "HKLM:\SOFTWARE\WOW6432Node\Oracle\VirtualBox" "VersionExt" $SPOOF_VEREXT
     Write-OK "Version=VersionExt=$SPOOF_VER(64 位 + 32 位视图)"
 
-    Write-Step "3/6 劫持 CLSID InprocServer32 -> 我们的 DLL"
+    Write-Step "3/7 劫持 CLSID InprocServer32 -> 我们的 DLL"
     # 关键:路径按检测到的真实 eNSP 位置动态生成,不写死
     # 指向 tools\ 下那一份(第 1 步必定已部署),COM 激活按此绝对路径加载
     $destDll = Join-Path $EnspDir "tools\$DLL_NAME"
@@ -490,11 +557,11 @@ function Do-Install {
         Write-OK "已移除 64 位视图里旧版安装器写入的 InprocServer32"
     }
 
-    Write-Step "4/6 部署已补丁的 AR 路由器插件 VAR_Plugin.dll"
+    Write-Step "4/7 部署已补丁的 AR 路由器插件 VAR_Plugin.dll"
     $varp = Join-Path $EnspDir "plugin\ar1000v\VAR_Plugin.dll"
     Deploy-PayloadFile "VAR_Plugin.dll" $varp $VARP_SHA256
 
-    Write-Step "5/6 部署 x86 VC++ 运行时到 VBox\x86\ 子目录"
+    Write-Step "5/7 部署 x86 VC++ 运行时到 VBox\x86\ 子目录"
     if ($VBoxDir) {
         # proxystub-x86.dll(经 VBoxRT-x86.dll)需要 x86 VCRUNTIME140 + MSVCP140。
         # 放进 x86\ 子目录是 DLL 搜索顺序第一步,修 0x800700C1。
@@ -514,11 +581,14 @@ function Do-Install {
         Write-Warn "复制到 VBoxSVC.exe 同目录的 x86\ 子目录。"
     }
 
-    Write-Step "6/6 授予登录用户对 vboxserver\ 的写权限"
+    Write-Step "6/7 授予登录用户对 vboxserver\ 的写权限"
     # eNSP 装在 C:\Program Files 时,非提权的 VBoxHeadless 无法在
     # vboxserver\<VM>\Logs 下建目录/写日志 -> VERR_FILE_NOT_FOUND -> error 40。
     # 提权阶段一次性把整棵 vboxserver\ 树的修改权赋给登录用户(可继承)。
     Grant-VBoxServerWrite -EnspDir $EnspDir -GrantSid $GrantSid
+
+    Write-Step "7/7 SVRP 设备(CE/NE)未连接的 virtio 网卡 -> 空内部网络(修关机崩溃)"
+    Set-UnattachedVirtioNics -VBoxDir $VBoxDir -EnspDir $EnspDir
 
     Write-Host "`n============================================================" -ForegroundColor Green
     Write-Host "  安装完成。启动 eNSP,先单独启动一台 AR 试试。" -ForegroundColor Green
@@ -532,7 +602,7 @@ function Do-Install {
 function Do-Uninstall {
     param([string]$EnspDir, [string]$VBoxDir)
 
-    Write-Step "1/6 还原版本字符串"
+    Write-Step "1/7 还原版本字符串"
     # 真实版本现场读,不写死常量:装过本垫片的机器上注册表里是伪装值,拿它还原等于没还原;
     # 写死某个历史版本号则在别的 VBox 版本上写错值。
     # VBoxManage --version 输出形如 "7.2.14r174565",而注册表要的是不带构建号的 "7.2.14";
@@ -559,17 +629,17 @@ function Do-Uninstall {
         Write-Info "(不含 r 构建号),写回 Oracle\VirtualBox 的 Version 与 VersionExt(两个视图)。"
     }
 
-    Write-Step "2/6 还原 AR 插件 VAR_Plugin.dll"
+    Write-Step "2/7 还原 AR 插件 VAR_Plugin.dll"
     $varp = Join-Path $EnspDir "plugin\ar1000v\VAR_Plugin.dll"
     Restore-FromBak $varp
 
-    Write-Step "3/6 还原 NGFW 防火墙插件"
+    Write-Step "3/7 还原 NGFW 防火墙插件"
     # 安装器从不碰这个文件,所以这里通常无事可做,只会打印"无备份,跳过"。
     # 留这一步只为兜住"曾手工打过补丁并留下 .orig.bak"的情形;手工跑过
     # patches\patch_ngfw_plugin.py 的,用它的 --restore 还原即可。
     Restore-FromBak (Join-Path $EnspDir "plugin\ngfw\NGFW_Plugin.dll")
 
-    Write-Step "4/6 还原所有位置的 VBox52.dll"
+    Write-Step "4/7 还原所有位置的 VBox52.dll"
     $vboxDirs = @(
         (Join-Path $EnspDir "tools"),
         (Join-Path $EnspDir "vboxserver"),
@@ -582,14 +652,14 @@ function Do-Uninstall {
         Remove-DeployedFile $p (@($DLL_SHA256) + $PREV_DLL_SHA256)
     }
 
-    Write-Step "5/6 CLSID InprocServer32(需手动)"
+    Write-Step "5/7 CLSID InprocServer32(需手动)"
     Write-Warn "CLSID 项的原始状态随 VirtualBox 版本而异,本脚本不擅自改写。"
     Write-Warn "实测原版 7.2.16 的 32 位视图里没有这个键,VirtualBox 的【修复】也不会删除它。"
     Write-Warn "确认不再需要垫片后,在管理员命令提示符中删除即可还原:"
     Write-Warn "  reg delete `"HKLM\SOFTWARE\Classes\WOW6432Node\CLSID\$CLSID_VBOX`" /f"
     Write-Warn "安装前若用 reg export 备份过该键,也可以直接导入备份。"
 
-    Write-Step "6/6 还原 x86\ 子目录的 VC++ 运行时"
+    Write-Step "6/7 还原 x86\ 子目录的 VC++ 运行时"
     if ($VBoxDir) {
         $x86sub = Join-Path $VBoxDir "x86"
         foreach ($f in $VCRT_X86_FILES) {
@@ -603,6 +673,9 @@ function Do-Uninstall {
     } else {
         Write-Info "未定位 VirtualBox 目录,跳过 VC++ 运行时清理。"
     }
+
+    Write-Step "7/7 SVRP 设备网卡改回未连接"
+    Set-UnattachedVirtioNics -VBoxDir $VBoxDir -EnspDir $EnspDir -Revert
 
     Write-Host "`n卸载流程完成(CLSID 项请按上面第 5 步的提示手动处理)。`n" -ForegroundColor Green
 }

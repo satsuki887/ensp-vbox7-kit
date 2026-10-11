@@ -220,10 +220,13 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -EnspDir "D:\Program Files\
    原文件备份为 `.orig.bak`。运行时不做字节补丁。
 5. **部署 x86 VC++ 运行时**：把 `VCRUNTIME140.dll`、`MSVCP140.dll` 写到 VirtualBox 的 `x86\` 子目录。
 6. **授予写权限**：给登录用户授予 `vboxserver\` 目录的修改权限（设备运行时要在这里写日志）。
+7. **修 CE / NE 关机崩溃**：eNSP 自带 VM 里“未连接 + virtio”的网卡（SVRP 设备的 1 号网卡）改挂到各自专用的空内部网络
+   `ensp-unused-<VM>-nic<N>`。VirtualBox 7.x 的 virtio-net 在网卡未连接时发送线程会空转，关机卡 60 秒后崩溃；
+   客机看到的网卡不变。卸载时改回未连接。详见 [`svrp-shutdown-crash.md`](../docs/findings/svrp-shutdown-crash.md)。
 
 原理详见 [`docs/architecture.md`](../docs/architecture.md)。
 
-> `NGFW_Plugin.dll` 不在上述六步之内。2026-09-10 的 A/B 实测表明，原版和 22 处 vtable 补丁版的启动结果没有差别（失败
+> `NGFW_Plugin.dll` 不在上述七步之内。2026-09-10 的 A/B 实测表明，原版和 22 处 vtable 补丁版的启动结果没有差别（失败
 > 签名相差不到 1 毫秒），原版就能正常启动 USG6000V。补丁器保留在 `patches/` 下，安装器不修改这个文件；`-Check` 仍会报告
 > 它的状态（原版 / 已打补丁）。
 
