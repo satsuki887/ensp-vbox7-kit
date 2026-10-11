@@ -1,0 +1,32 @@
+# ---- Local-only material (see local/README.md) ----------------------------
+# Installers, backups, crash dumps and toolchain packages live here and are
+# never committed: some are third-party software we may not redistribute
+# (Npcap's licence forbids it), the rest is simply machine-specific.
+/local/*
+!/local/README.md
+
+# ---- Third-party files the installer needs but this repo must not ship -----
+# Huawei's AR plugin. Generated from your own eNSP by tools/prepare-payload.ps1
+# (also run automatically by installer/安装.bat when missing).
+/installer/payload/VAR_Plugin.dll
+
+# ---- Build output -----------------------------------------------------------
+# build/VBox52.dll and installer/payload/VBox52.dll ARE tracked: the installer
+# pins their SHA-256. Intermediates are not.
+*.obj
+*.exp
+*.ilk
+*.pdb
+/build/*.lib
+# Test-only build with the ShimSelfTest export. Must never be shipped.
+/build/selftest/
+/tools/dev/**/out/
+/tools/dev/**/*.exe
+
+# ---- Debris -----------------------------------------------------------------
+*.dmp
+*.orig.bak
+__pycache__/
+*.pyc
+Thumbs.db
+desktop.ini

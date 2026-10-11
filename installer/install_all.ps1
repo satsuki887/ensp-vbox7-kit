@@ -496,6 +496,22 @@ $registerPs1 = Join-Path $ScriptDir "register_vms.ps1"
 if (-not (Test-Path $installPs1))  { Write-Err "整合包损坏:缺 install.ps1";    exit 1 }
 if (-not (Test-Path $registerPs1)) { Write-Err "整合包损坏:缺 register_vms.ps1"; exit 1 }
 
+# VAR_Plugin.dll 是华为的文件,仓库不分发它;缺的话从本机 eNSP 现场生成(只读、不提权)。
+# 必须在 -Check 分支之前:检测要报告 payload 状态,装之前也得有它。
+$varpPayload = Join-Path $ScriptDir "payload\VAR_Plugin.dll"
+$preparePs1  = Join-Path (Split-Path -Parent $ScriptDir) "tools\prepare-payload.ps1"
+if (-not (Test-Path $varpPayload)) {
+    Write-Host "  [..] 安装包里还没有 VAR_Plugin.dll,从本机 eNSP 生成(tools\prepare-payload.ps1)⋯" -ForegroundColor Gray
+    if (-not (Test-Path $preparePs1)) { Write-Err "缺 tools\prepare-payload.ps1,无法生成 VAR_Plugin.dll"; exit 1 }
+    $prepArgs = @("-NoProfile","-ExecutionPolicy","Bypass","-File",$preparePs1)
+    if ($EnspDir) { $prepArgs += @("-EnspDir",$EnspDir) }
+    & powershell.exe @prepArgs
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $varpPayload)) {
+        Write-Err "生成 VAR_Plugin.dll 失败(见上方输出),未做任何改动。"
+        exit 1
+    }
+}
+
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host "  ensp-vbox-shim  一键安装(打补丁 + 注册设备 + 环境检测)" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
