@@ -30,3 +30,10 @@ __pycache__/
 *.pyc
 Thumbs.db
 desktop.ini
+
+# ---- Tooling ----------------------------------------------------------------
+# Machine-specific notes for Claude Code (CLAUDE.md itself is tracked).
+CLAUDE.local.md
+/.claude/settings.local.json
+# Browser-automation plugin cache dropped into the working directory.
+/.playwright-mcp/
