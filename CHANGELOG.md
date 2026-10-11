@@ -6,7 +6,30 @@ eNSP 1.3.00.100、VirtualBox 7.2.16），验证方法写在对应的提交说明
 
 ## 未发布
 
+### 修复（安装器）
+
+- **CE / CX / NE 系列关机卡约 3 分钟后崩溃**（`VBoxDD.DLL`，“该内存不能为 read”），以及期间重开同型设备插件卡在 `###`。
+  根因是这些虚拟机的 1 号网卡为“未连接 + virtio”，VirtualBox 7.x 的 virtio-net 在没挂驱动时发送循环从不消费描述符，
+  TX 线程空转占满一核，关机时挂不起来。新增安装第 7 步：把这类网卡改挂到各自专用的空内部网络（`ensp-unused-*`），
+  卸载时改回。实测关机从 60 秒超时 + 崩溃变为 0.25 秒（CE6800）/ 6 毫秒（NE40E）。见 `svrp-shutdown-crash.md`。
+- 第 7 步先等普通权限的 VBoxSVC 退出，等不到就提示并跳过：VirtualBox 7 每个用户只有一个 VBoxSVC，
+  普通权限的 VBoxSVC 写不了 Program Files 下的配置。同一原因也会让 CE / NE 启动超时，已写进排错说明。
+
+### 新增
+
+- `patches/patch_pcap_version.py`：让 Cloud 设备在 Npcap 下也能绑定本机网卡（可选，安装器不做）。Cloud 插件与
+  `eNSP_Client.exe` 有两处判断会丢掉所有 Npcap 网卡：主版本号 `== 4`（Npcap 报 `1.89`），以及 `LinkSpeed >= 10 Mbps`
+  （Npcap 对所有网卡报 0）。WinPcap 下行为不变。见 `cloud-npcap.md`。
+- `tools/dev/pcapprobe/cloud.bat`：在 eNSP 之外调用 Cloud 插件自己的网卡枚举，对比 WinPcap / Npcap。
+- `tools/dev/installer-tests/test_svrp_nic.ps1`：第 7 步的沙箱测试。
+
 ### 文档与提示文字
+
+- `registry/02_clsid_inprocserver.reg` 不再写 64 位视图（与 0.1.0 的安装器修复保持一致；原文件照导会让 64 位程序
+  报 `0x800700C1`），说明里关于原版 CLSID 状态与还原方法的描述改为实测结果。`docs/manifest.md` 同步更正，
+  并补上第 7 步与 Cloud 补丁。
+- 关机崩溃修复后，README、`installer/README.md`、`环境检查.bat` 的提示与 `清理残留.bat` 的说明不再说“关机要 3–5 分钟”；
+  Npcap 相关提示改为实测结论（接口抓包正常，Cloud 只剩 UDP，补丁可修）。
 
 - 重写 `README.md` 与 `installer/README.md`：补充脚本一览和 Python 3 前提，统一标点与用词，更正过时内容
   （`VAR_Plugin.dll` 改为本机生成、注册设备会保留已正确注册的 VM、`-Fix` 需在管理员命令提示符中执行）。
@@ -50,7 +73,7 @@ eNSP 1.3.00.100、VirtualBox 7.2.16），验证方法写在对应的提交说明
   安装器沙箱测试。
 - 新增 `local/`（git 忽略）存放安装包、备份与崩溃现场；`.gitattributes` 固定 `.bat` 为 CRLF。
 
-### 新发现（未修复，见 `docs/findings/`）
+### 新发现（见 `docs/findings/`；其中 Cloud / Npcap 与 CE / NE 关机两项已在“未发布”中修复）
 
 - IVirtualBox 方法区槽位整体少算 12（类型库与运行时双重确认）：`vtable-reserved-slots.md`
 - Cloud 设备不认 Npcap 兼容模式的根因：`cloud-npcap.md`

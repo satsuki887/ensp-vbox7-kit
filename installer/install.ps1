@@ -7,12 +7,14 @@
     插件 DLL 覆盖目标文件(备份原文件为 .orig.bak,可逆),写版本伪装与
     CLSID 注册表项。
 
-    五座承重的桥(详见仓库 docs/):
+    安装七步(详见仓库 docs/manifest.md):
       1. VBox52.dll        → 覆盖全部加载位置(tools/ vboxserver/ 根 ngfw/)
       2. 版本伪装           → 注册表 Oracle\VirtualBox Version=VersionExt=5.2.44
-      3. CLSID InprocServer → 指向我们的 DLL(按真实路径生成)
+      3. CLSID InprocServer → 32 位视图指向我们的 DLL(按真实路径生成)
       4. VAR_Plugin.dll     → 覆盖为 payload 中的已补丁版本(tools\prepare-payload.ps1 本机生成)
       5. VC++ 运行时(x86) → 部署到 VBox\x86\ 子目录(干净机缺它会 error 40 / 0x800700C1)
+      6. vboxserver\ 写权限 → 授予登录用户(非提权 VBoxHeadless 要在那里写日志)
+      7. CE / NE 网卡       → 未连接的 virtio 网卡改挂空 intnet(修关机卡死崩溃)
     NGFW_Plugin.dll 不做处理:2026-09-10 的受控 A/B 实测显示,出厂原版与
     22 站点补丁版在启动结果上没有任何差异(失败签名相差不到 1 毫秒),
     且 host 上出厂原版即可正常启动 USG6000V。补丁器仍留在 patches/ 下备查。

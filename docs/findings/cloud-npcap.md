@@ -3,7 +3,7 @@
 **状态：已修复，补丁器 `patches/patch_pcap_version.py`**；2026-10-11 在 eNSP 内用 Npcap 1.89 验证：
 Cloud 能列出并绑定本机网卡，抓包正常。WinPcap 4.1.3 下行为不变 · 记录于 2026-10-11
 
-## 现象
+## 现象（修复前）
 
 卸载 WinPcap、改装 Npcap 1.89 并勾选 "WinPcap API-compatible Mode" 后：
 

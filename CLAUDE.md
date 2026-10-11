@@ -23,6 +23,7 @@ tools\dev\hooktest\run.bat         :: hook 并发 + AppCompat 矩阵，必须 AL
 tools\dev\vboxprobe\run.bat        :: 真实虚表布局；升级 VirtualBox 后先跑它再信任任何槽位表
 tools\dev\pcapprobe\run.bat        :: packet.dll 返回值（Cloud / Npcap 相关）
 tools\dev\pcapprobe\cloud.bat      :: 直接调用 Cloud 插件的网卡枚举（WinPcap / Npcap 各跑一次）
+powershell -Command ". .\build\tests\harness.ps1; . .\installer\checks.ps1; . .\build\tests\checks.Tests.ps1"  :: 检测库单元测试，须 ALL PASS
 powershell -File tools\dev\installer-tests\test_deploy.ps1   :: 安装器升级/卸载逻辑
 powershell -File tools\dev\installer-tests\test_svrp_nic.ps1 :: 第 7 步 SVRP 网卡改挂（建临时 VM，需 VirtualBox）
 ```

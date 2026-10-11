@@ -654,10 +654,10 @@ function Get-RepairFindings {
                 Evidence = ("eNSP 未运行,但仍有 " + $orphan.Proc.HeadlessCount + " 个 VBoxHeadless;" +
                             "其中属于 eNSP 的 VM: " + (@($enspOwnedRunning | ForEach-Object { $_.Name }) -join ", "))
                 Impact   = @(
-                    "会强制结束这些进程。CE / CX / NE 的客户机是 Linux,硬断电收尾本来就慢,"
-                    "强杀时它们未保存的状态会丢 —— 那些设备此时本来也已经不可用了。"
+                    "会强制结束这些进程。强杀时它们未保存的状态会丢 —— eNSP 已关,那些设备此时本来也已经不可用了。"
                     "【不属于 eNSP 的 VM 一律不动】,清单以本项列出的为准。"
-                    "不着急的话也可以什么都不做:它们退完后内存会正常归还,不是泄漏。"
+                    "若是 CE / CX / NE 反复残留,多半是安装第 7 步(网卡修正)没生效:重装过 eNSP,"
+                    "或安装时被普通权限的 VBoxSVC 挡住。重新运行 安装.bat 才是根治。"
                 )
                 Steps    = @( [pscustomobject]@{ Fn = "Repair-KillOrphans"; Args = @{} } )
                 Manual   = @()
@@ -1746,7 +1746,9 @@ try {
 }
 
 # --- 抓包驱动 (WinPcap / Npcap) ---------------------------------------------
-# eNSP 的抓包只认 WinPcap;Npcap 的兼容层不被接受。
+# 推荐 WinPcap 4.1.3。Npcap 兼容模式下接口抓包正常,但 Cloud 设备只剩 UDP
+# (版本号与链路速率两处判断,patches/patch_pcap_version.py 可修,见
+# docs/findings/cloud-npcap.md);上游另记录过部分设备启动失败,本仓库未复现。
 #
 # 判据是【谁占着系统 wpcap.dll】,不是谁的服务在跑。这两件事实测会分叉(2026-09-16):
 # npf.sys(WinPcap 的驱动)与 npcap.sys(Npcap 的驱动)可以并存且互不干扰,此时
@@ -1769,17 +1771,19 @@ try {
 
     if ($pk.NpcapDisplaced) {
         Write-Host ""
-        Write-Note "  !! 系统 wpcap.dll 是 Npcap 提供的 —— eNSP 抓包不认它。"
+        Write-Note "  !! 系统 wpcap.dll 是 Npcap 提供的。接口抓包可用,但 Cloud 设备只剩 UDP,"
+        Write-Note "     除非已用 patches\patch_pcap_version.py 给 Cloud 插件打过补丁。"
         Write-Note "     而且 Npcap 在装时会让 WinPcap 安装程序报『已有更新版本』而拒绝安装。"
-        Write-Note "     修法: 卸载 Npcap(或只保留其独立模式),再把 wpcap.dll 换回 WinPcap 4.1.3。"
+        Write-Note "     推荐修法: 卸载 Npcap(或只保留其独立模式),再把 wpcap.dll 换回 WinPcap 4.1.3。"
     } elseif ($pk.PacketTooNew) {
         Write-Host ""
         Write-Note ("  !! packet.dll 的版本(" + $pk.PacketVersion + ")高于原厂最后一版 WinPcap(4.1.3)。")
         Write-Note "     原厂 WinPcap 停在 4.1.3,不存在更高版本 —— 报到更高版本的是替代品的兼容层。"
         Write-Note "     Npcap 勾选 WinPcap API-compatible Mode 安装时,会把自己的 packet.dll 写进系统"
-        Write-Note "     目录并报内部版本 5.1.83.730;Win10Pcap 同类。eNSP 直接 import 的就是这个文件,"
-        Write-Note "     抓包与部分设备的启动会失败。"
-        Write-Note "     修法: 控制面板卸载 Npcap(或 Win10Pcap),再把 WinPcap 4.1.3 装回来。"
+        Write-Note "     目录并报内部版本 5.1.83.730;Win10Pcap 同类。eNSP 直接 import 的就是这个文件。"
+        Write-Note "     Npcap 下接口抓包可用,但 Cloud 设备只剩 UDP(patches\patch_pcap_version.py 可修);"
+        Write-Note "     上游还记录过部分设备启动失败。"
+        Write-Note "     推荐修法: 控制面板卸载 Npcap(或 Win10Pcap),再把 WinPcap 4.1.3 装回来。"
         Write-Note "     装 WinPcap 若报『已有更新版本』,是同一个成因 —— 替代品清掉后即可装上。"
     } elseif ($pk.WinPcapUsable) {
         Write-Note "  WinPcap 就位,eNSP 抓包路径可用。"
@@ -2267,10 +2271,11 @@ function Get-EnspOrphanFacts {
 Write-Section "[7] 残留进程"
 $sectionsOk += "7"
 
-# 关闭 eNSP 时它会为每台设备补发 controlvm poweroff。CE / CX / NE 那几台的客户机
-# 是 Linux,硬断电收尾极慢(实测 5 分钟以上),个别进程还会在收尾时崩溃并弹出
-# 「应用程序错误」框,不点掉就一直挂着,每台占 0.4-1.5 GB。全部退完之后内存会正常
-# 归还,不算泄漏;但它会让一台好机器看起来像坏的,而本报告其余各节都看不出。
+# 关闭 eNSP 时它会为每台设备补发 controlvm poweroff。CE / CX / NE 那几台以前要卡
+# 约 3 分钟,最后崩溃并弹出「应用程序错误」框,不点掉就一直挂着,每台占 1-4 GB。
+# 安装第 7 步(未连接的 virtio 网卡改挂空 intnet)修正后关机在 1 秒内完成,所以
+# eNSP 已关还有残留,通常说明那一步没生效。它会让一台好机器看起来像坏的,而本报告
+# 其余各节都看不出。见 docs/findings/svrp-shutdown-crash.md。
 #
 # 归属按【VM 配置文件的路径】判,不按进程名:eNSP 已关时任何 VBoxHeadless 都算残留,
 # 但用户自己从 VirtualBox GUI 起的 VM 不算。这与 清理残留.bat 划的是同一条线。
@@ -2307,10 +2312,9 @@ try {
         if ((-not $proc.EnspRunning) -and ($proc.HeadlessCount -gt 0)) {
             Write-Host ""
             Write-Note "  eNSP 已关闭,但仍有 VBoxHeadless 占着内存。"
-            Write-Note "     CE / CX / NE 的客户机是 Linux,硬断电收尾慢,实测 5 分钟以上;"
-            Write-Note "     期间内存不释放,个别进程崩溃后弹出的「应用程序错误」框不点掉会一直挂住。"
-            Write-Note "     全部退完后内存正常归还,本工具也不把它算作故障。"
-            Write-Note "     不想等就双击 清理残留.bat —— 它按归属列清单后确认,不碰用户自己的 VM。"
+            Write-Note "     安装后 CE / CX / NE 关机应在 1 秒内完成。还在的话,多半是安装第 7 步(网卡修正)"
+            Write-Note "     没生效 —— 重装过 eNSP,或安装时被普通权限的 VBoxSVC 挡住 —— 重新运行 安装.bat 即可根治。"
+            Write-Note "     眼下要释放内存:双击 清理残留.bat —— 它按归属列清单后确认,不碰用户自己的 VM。"
         } elseif ($proc.EnspRunning -and ($owned.Count -gt 0)) {
             Write-Note "  eNSP 正在运行,上面这些 VM 是它的在用设备,属正常。"
         }

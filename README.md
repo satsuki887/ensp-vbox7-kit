@@ -23,8 +23,10 @@ eNSP 只认 VirtualBox 5.2，而 5.2 在新版 Windows 上装不上、不稳定�
 - **修复**了垫片和安装器里几处会导致崩溃或漏改参数的问题：多台设备同时启动、Windows 兼容模式、日志溢出、
   64 位 COM 注册、升级安装；
 - **不再分发**华为的 `VAR_Plugin.dll`，改为在安装时从你本机的 eNSP 生成；
+- **修复**了 CE / CX / NE 系列关机卡死并崩溃的问题（根因在 VirtualBox 7 的 virtio 网卡，安装器自动规避）；
+- 提供补丁器，让 **Cloud 设备在 Npcap 下**也能绑定本机网卡（可选）；
 - 加入**可复现编译**和一组**测试 / 探针工具**；
-- 记录了几处已定位、尚未修复的问题，作为后续工作的起点。
+- 记录了排障过程，以及一处已定位、尚未修复的问题（见[已知问题](#已知问题与后续计划)）。
 
 完整改动见 [`CHANGELOG.md`](CHANGELOG.md)。
 
@@ -57,7 +59,7 @@ eNSP 只认 VirtualBox 5.2，而 5.2 在新版 Windows 上装不上、不稳定�
 3. 下载本仓库（`git clone` 或 GitHub 上的 “Download ZIP”），用**平时启动 eNSP 的账户**双击
    `installer\安装.bat`。安装器会依次：
    - 做一遍安装前检查（只读）。会影响网络的修复项，执行前会先征得你同意；
-   - 部署垫片和补丁（此时弹一次 UAC，点“是”）。被替换的原文件都备份为 `.orig.bak`；
+   - 部署垫片和补丁，并修正 CE / NE 系列虚拟机的网卡设置（此时弹一次 UAC，点“是”）。被替换的原文件都备份为 `.orig.bak`；
    - 注册 eNSP 的基础设备 VM；
    - 运行一次环境检测，并把报告保存到 `C:\ProgramData\ensp-vbox-shim\`。
 4. 启动 eNSP，先单独启动一台 AR 试试。
@@ -70,7 +72,7 @@ eNSP 只认 VirtualBox 5.2，而 5.2 在新版 Windows 上装不上、不稳定�
 |---|---|
 | `安装.bat` | 首次安装、升级 |
 | `环境检查.bat` | 设备起不来时先跑它。生成一份只读报告，第 [9] 节列出问题和修复命令；加 `-Fix` 执行修复 |
-| `清理残留.bat` | 关闭设备或 eNSP 后，`VBoxHeadless.exe` 迟迟不退出、占着内存 |
+| `清理残留.bat` | 关闭 eNSP 后仍有 `VBoxHeadless.exe` 没退出、占着内存（兜底用，正常情况下用不到） |
 | `注册设备.bat` | 只在安装时提示“已跳过自动注册”时使用 |
 | `卸载.bat` | 还原 eNSP 和 VirtualBox 的改动 |
 
@@ -78,20 +80,24 @@ eNSP 只认 VirtualBox 5.2，而 5.2 在新版 Windows 上装不上、不稳定�
 
 ## 日常使用须知
 
-- **CE / CX / NE 系列关闭需要约 3 分钟**，关闭后还可能弹出 `VBoxHeadless.exe` 应用程序错误，点“确定”即可
-  （原因见 [`svrp-shutdown-crash.md`](docs/findings/svrp-shutdown-crash.md)）。在它们完全退出前**重新启动同一种设备**，
-  插件会卡在 `###`。所以换拓扑时按这个顺序：**关闭 eNSP → 运行 `installer\清理残留.bat` → 重新打开 eNSP**。
+- **CE / CX / NE 系列**：在 eNSP 里“停止设备”只停掉虚拟机里的路由器，虚拟机本身要到**关闭 eNSP** 时才关机。
+  安装器修正网卡设置后，关机在 1 秒内完成；以前要卡约 3 分钟并弹出 `VBoxHeadless.exe` 应用程序错误
+  （原因见 [`svrp-shutdown-crash.md`](docs/findings/svrp-shutdown-crash.md)）。**重装 eNSP 后要重新运行 `安装.bat`**，
+  否则这项修正会被原版配置覆盖掉。
+- **CE / NE 一直显示 `###` 后报启动超时**：多半是有一个普通权限的 `VBoxSVC.exe` 在运行（例如刚用过 VirtualBox
+  管理器或命令行）。关闭 eNSP，在任务管理器里结束 `VBoxSVC.exe`，再重新打开 eNSP。
 - **内存**：CE / NE 每台约占 4 GB。16 GB 内存的机器如果还开着 VMware，这类大设备尽量只开一两台。
-- **抓包驱动**：保留 WinPcap 4.1.3；安装 Npcap 时**不要**勾选 “WinPcap API-compatible Mode”，否则 Cloud 设备只剩 UDP。
-  想只用 Npcap，先以管理员运行 `python patches\patch_pcap_version.py`（见 [`cloud-npcap.md`](docs/findings/cloud-npcap.md)）
+- **抓包驱动**：推荐保留 WinPcap 4.1.3，安装 Npcap 时**不要**勾选 “WinPcap API-compatible Mode”。只想用 Npcap 的话，
+  先关闭 eNSP、以管理员运行 `python patches\patch_pcap_version.py`，否则 Cloud 设备只剩 UDP
   （见 [`cloud-npcap.md`](docs/findings/cloud-npcap.md)）。
 - **升级或重装 VirtualBox 之后**：它会在所有网卡上重新启用 “VirtualBox NDIS6 Bridged Networking Driver”。
   eNSP 用不到物理网卡上的这一项，可以在无线网卡上关掉；**host-only 网卡上的那一项必须保留**。
 
 ## 卸载与回滚
 
-- 运行 `installer\卸载.bat`：还原 VirtualBox 版本号、`VAR_Plugin.dll`、x86 运行时和各处的 `VBox52.dll`，
-  删除安装器新建的文件。
+- 运行 `installer\卸载.bat`：还原 VirtualBox 版本号、`VAR_Plugin.dll`、x86 运行时、各处的 `VBox52.dll`
+  和 CE / NE 系列的网卡设置，删除安装器新建的文件。
+- 打过 Cloud 补丁的，用 `python patches\patch_pcap_version.py --restore` 还原（卸载.bat 不处理它）。
 - **COM 注册表项需要手动处理**。原版 7.2.16 的 32 位注册表视图里根本没有 `CLSID_VirtualBox` 这个键，
   所以“修复 VirtualBox”也删不掉它。确认不再需要垫片后，在管理员命令提示符中执行：
 
@@ -124,7 +130,9 @@ tools\dev\hooktest\run.bat            :: CreateProcessW hook 并发 + 兼容层�
 tools\dev\vboxprobe\run.bat           :: 读出已安装 VirtualBox 的真实虚表布局（每次升级 VirtualBox 后先跑）
 tools\dev\pcapprobe\run.bat           :: 像 Cloud 插件一样调用 packet.dll，对比 WinPcap / Npcap
 tools\dev\pcapprobe\cloud.bat         :: 直接调用 Cloud 插件的网卡枚举，看 WinPcap / Npcap 下各列出哪些网卡
+powershell -Command ". .\build\tests\harness.ps1; . .\installer\checks.ps1; . .\build\tests\checks.Tests.ps1"  :: 检测库单元测试
 powershell -File tools\dev\installer-tests\test_deploy.ps1   :: 安装器升级 / 卸载逻辑沙箱测试
+powershell -File tools\dev\installer-tests\test_svrp_nic.ps1 :: 安装器第 7 步（CE / NE 网卡）沙箱测试，需 VirtualBox
 ```
 
 修改 `src/` 之后：编译 → 把 `build\VBox52.dll` 复制到 `installer\payload\` → 在 `installer\install.ps1` 中把旧的
@@ -146,7 +154,7 @@ src/                 垫片源码（C++ / MASM）
 build/               build.bat 与发布用的 VBox52.dll；tests/ 是检测库的单元测试
 installer/           安装 / 卸载 / 注册设备 / 环境检查 / 清理残留
   payload/           安装器部署的文件（VAR_Plugin.dll 在本机生成，不进 git）
-patches/             VAR_Plugin / NGFW 插件补丁器
+patches/             VAR_Plugin / NGFW 插件补丁器，Cloud + Npcap 补丁器
 registry/            参考用 .reg（安装器直接写注册表，不导入它们）
 tools/               prepare-payload.ps1；dev/ 下是测试与探针工具
 docs/                架构、vtable 映射、诊断说明；findings/ 是本仓库的排障记录；upstream/ 是原 README

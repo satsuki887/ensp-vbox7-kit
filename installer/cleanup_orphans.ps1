@@ -1,12 +1,13 @@
 ﻿# cleanup_orphans.ps1 — 清理 eNSP 退出后残留的 VirtualBox 后台进程
 #
-# 背景(2026-09-12 实测):关闭 eNSP 时,它会为每台设备补发
-# `VBoxManage controlvm <vm> poweroff`。SVRP 那几台(CE / CX / NE40E /
-# NE5000E / NE9000,都是 Linux 客户机)在硬断电收尾时:
-#   - 退出极慢,实测要 5 分钟以上才陆续走完
-#   - 个别进程会在收尾时访问空指针崩溃(0x...24 该内存不能为 read),
-#     弹出「应用程序错误」框,不点掉就一直挂着不放内存
-# 每台 VBoxHeadless 约占 0.4-1.5 GB。
+# 背景:关闭 eNSP 时,它会为每台设备补发 `VBoxManage controlvm <vm> poweroff`。
+# SVRP 那几台(CE / CX / NE40E / NE5000E / NE9000)以前在这一步要卡约 3 分钟,
+# 最后在 VBoxDD.DLL 里崩溃(0x...24 该内存不能为 read),弹出「应用程序错误」框,
+# 不点掉就一直挂着不放内存。根因是 VirtualBox 7.x 的 virtio 网卡在"未连接"时
+# 发送线程空转,安装器第 7 步已规避(docs/findings/svrp-shutdown-crash.md),
+# 修正后关机在 1 秒内完成。
+# 本脚本留作兜底:第 7 步没生效(重装过 eNSP、被普通权限的 VBoxSVC 挡住)或
+# 其它原因卡住的进程,仍可以用它清掉。
 #
 # *** 安全边界 ***
 # 本脚本**只处理 eNSP 自己的虚拟机**。判据是 VM 的配置文件(CfgFile)位于:

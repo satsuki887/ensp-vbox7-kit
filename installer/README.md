@@ -9,10 +9,10 @@
 | 文件 | 作用 |
 |------|------|
 | `安装.bat` | 安装入口：部署垫片和补丁、注册基础设备 VM、运行环境检测 |
-| `卸载.bat` | 卸载入口：还原版本号、插件、运行时，移除垫片 |
+| `卸载.bat` | 卸载入口：还原版本号、插件、运行时和 CE / NE 网卡设置，移除垫片 |
 | `环境检查.bat` | 只读采集本机环境并生成报告；加 `-Fix` 执行修复 |
 | `注册设备.bat` | 后备入口，只在安装时跳过了自动注册的情况下使用 |
-| `清理残留.bat` | 结束没有退出的 `VBoxHeadless.exe` 残留进程 |
+| `清理残留.bat` | 结束没有退出的 `VBoxHeadless.exe` 残留进程（兜底用） |
 | `install_all.ps1` | 安装流程编排，由 `安装.bat` 调用：提权部署补丁，以登录账户身份注册设备，最后做环境检测 |
 | `install.ps1` | 部署 / 卸载 / 检测，由 `install_all.ps1` 和 `卸载.bat` 调用 |
 | `register_vms.ps1` | 注册基础设备 VM，由 `install_all.ps1` 和 `注册设备.bat` 调用 |
@@ -36,7 +36,7 @@
 0. 若 `payload\` 下还没有 `VAR_Plugin.dll`，先从本机 eNSP 生成（只读取 eNSP 目录，不需要管理员权限）；
 1. 安装前检查（只读）。查出的问题分三类：能自动修且无损的，安装时顺带修好；会短暂中断网络的，先说明影响再问你；
    没有自动修复手段的，问你是否继续；
-2. 部署垫片、AR 插件补丁和 x86 运行时（需要管理员权限，弹一次 UAC）；
+2. 部署垫片、AR 插件补丁和 x86 运行时，修正 CE / NE 系列的网卡设置（需要管理员权限，弹一次 UAC）；
 3. 注册基础设备 VM（以登录账户身份运行）；
 4. 运行时环境检测，并执行检出的可修项。
 
@@ -124,38 +124,38 @@ powershell -ExecutionPolicy Bypass -File register_vms.ps1 -Check
 
 `vfw_usg.vdi` 约 940 MB，复制需要一两分钟，进度条走完后对话框自动关闭。
 
-**资源需求**：CE / CX / NE40E / NE5000E / NE9000 直接启动 VM 本身，不克隆。它们的模板各分配 4 GB 内存，内存不足时系统
-会大量换页，甚至整机无响应（实测在分配了 2 GB 的虚拟机里，一台 CE12800 就能让它失去响应）。模板各分配 1 个 vCPU，
-嵌套虚拟化环境下启动明显变慢，NE 系列等大型设备可能超过十分钟。
+**资源需求**：CE / CX / NE40E / NE5000E / NE9000 直接启动 VM 本身，不克隆。内存按模板分配：CX 2 GB，其余 3.5–4.3 GB。
+内存不足时系统会大量换页，甚至整机无响应（实测在分配了 2 GB 的虚拟机里，一台 CE12800 就能让它失去响应）。
+vCPU 数以本机模板为准（2026-10-11 在一台 i9-13900HX 上五个模板都是 16）。嵌套虚拟化环境下启动明显变慢，
+NE 系列等大型设备可能超过十分钟；非嵌套环境下实测 CE6800 约 75 秒、NE40E 约 140 秒。
 
 **启动进度条**：这些设备是完整的虚拟机，同时启动多台时 eNSP 的进度条可能长时间不动，这不代表设备没在启动。可以双击
 设备进入控制台确认，或检查 `plugin\<插件>\LogFile\infolog*.txt` 里是否出现 `CAgent::ST_STARTED`（设备进入运行状态的
 标志）。启动过程中关闭 eNSP 会一并终止正在引导的设备。
 
-### 设备关闭后的残留进程（CE / CX / NE 系列）
+### CE / CX / NE 系列的关机（已由安装器修正）
 
-**现象**：关闭这些设备或关闭 eNSP 后，`VBoxHeadless.exe` 不立即退出，每个进程占用 1.2–1.5 GB 内存。设备图标可能显示
-“异常退出”，或弹出 `VBoxHeadless.exe - 应用程序错误`（`0x...24 该内存不能为 read`）。
+在 eNSP 里“停止设备”只停掉虚拟机里的路由器进程，虚拟机本身仍在运行；关闭 eNSP 时，eNSP 才对每台执行
+`VBoxManage controlvm <VM名> poweroff`。
 
-**2026-09-12 实测**：
+**修正前**：每台关机都要卡约 3 分钟，`VBoxHeadless.exe` 一直占着 1–4 GB 内存，最后弹出
+`VBoxHeadless.exe - 应用程序错误`（`0x...24 该内存不能为 read`）；在这期间重开同型设备，插件会卡在 `###`。
+根因是 VirtualBox 7.x 的 virtio 网卡在“未连接”时发送线程空转，关机等不到它停下（与垫片无关：`VBoxHeadless.exe`
+是 64 位进程，32 位的垫片不会加载进去）。分析见 [`svrp-shutdown-crash.md`](../docs/findings/svrp-shutdown-crash.md)。
 
-- 关闭 eNSP 时，eNSP 对每台设备执行 `VBoxManage controlvm <VM名> poweroff`（硬断电）。
-- 这些设备的系统是 Linux，硬断电后收尾很慢，实测超过五分钟才陆续退出，期间内存不释放。
-- 部分进程在收尾时访问空指针崩溃，弹出“应用程序错误”对话框；对话框不关，进程就不释放内存。
-- 全部退出后内存正常归还（实测从 18.0 GB 恢复到 24.8 GB），不是永久泄漏。
+**修正后**（安装第 7 步）：关机在 1 秒内完成，进程随即退出，不再弹错误框。2026-10-11 用 CE6800、NE40E 实测。
 
-**处理**：
+如果仍然遇到上述现象，按顺序检查：
 
-1. 出现“应用程序错误”对话框时，点“确定”关闭。
-2. 或者运行 `清理残留.bat`。清理范围取决于 eNSP 是否在运行：
+1. **是否重装过 eNSP**：重装会带回原版配置，重新运行 `安装.bat` 即可。
+2. **安装第 7 步是否成功**：看 `%ProgramData%\ensp-vbox-shim\install.log` 末尾，应有每台 VM 一行 `[OK]`；
+   若提示有普通权限的 VBoxSVC，按提示处理后重跑安装。
+3. 临时处理：出现“应用程序错误”时点“确定”；或关闭 eNSP 后运行 `清理残留.bat`。它的清理范围取决于 eNSP 是否在运行：
    - eNSP 已关闭：eNSP 设备的 `VBoxHeadless` 都算残留，列出后经你确认全部结束；
    - eNSP 运行中：只结束 VirtualBox 记录里已不在运行的孤儿进程，正在使用的设备不受影响。
 
    不属于 eNSP 的虚拟机一律不碰。脚本会先列出待清理的进程（含 VM 名和内存占用），确认后才执行。实测强制结束后
    VirtualBox 的记录会自动恢复，不会留下幽灵条目。
-
-> 这是 VirtualBox 7.x 硬断电收尾时的行为，与垫片无关：垫片是 32 位的，只加载进 32 位的 eNSP 进程，而
-> `VBoxHeadless.exe` 是 64 位的。分析见 [`docs/findings/svrp-shutdown-crash.md`](../docs/findings/svrp-shutdown-crash.md)。
 
 ### 卸载
 
@@ -165,8 +165,10 @@ powershell -ExecutionPolicy Bypass -File register_vms.ps1 -Check
 - 从 `.orig.bak` 还原 AR 插件（以及手工打过补丁的 NGFW 插件）；
 - 还原或移除各处的 `VBox52.dll`：`tools\`、`plugin\ngfw\tools\ngfw\` 两处原本有华为的文件，还原为原版；eNSP 根目录、
   `vboxserver\` 两处是安装时新建的，直接删除；
-- 还原或移除 VirtualBox `x86\` 子目录下的 VC++ 运行时。
+- 还原或移除 VirtualBox `x86\` 子目录下的 VC++ 运行时；
+- 把 CE / NE 系列虚拟机的 1 号网卡改回“未连接”。
 
+打过 Cloud 补丁（`patches\patch_pcap_version.py`）的，卸载脚本不处理，用它的 `--restore` 还原。
 CLSID 项需要手动处理，见下面的[卸载的最后一步](#卸载的最后一步clsid)。
 
 ### 只检测不改动
@@ -286,6 +288,11 @@ reg delete "HKLM\SOFTWARE\Classes\WOW6432Node\CLSID\{B1A7A4F2-47B9-4A1E-82B2-07C
 
 **安装后 eNSP 仍报版本错误**：运行 `-Check`，确认注册表 `Version` 和 `VersionExt` 都是 `5.2.44`、CLSID 指向 `tools` 下
 的 DLL。如果 eNSP 反过来报“未安装 VirtualBox”，检查 `VersionExt` 是否比 `InstallDir` 长。
+
+**CE / NE 一直显示 `###`，最后报启动超时**（AR、交换机却正常）：多半是有一个**普通权限**的 `VBoxSVC.exe` 在运行。
+VirtualBox 7 每个用户只有一个 VBoxSVC，它的权限由第一个启动它的程序决定；普通权限的 VBoxSVC 写不了 Program Files 下
+CE / NE 的日志，虚拟机一启动就退出。常见于刚用过 VirtualBox 管理器或命令行就打开 eNSP。处理：关闭 eNSP，在任务管理器
+里结束 `VBoxSVC.exe`，再重新打开 eNSP。安装第 7 步遇到同样情况会提示并跳过，处理后重跑安装即可。
 
 **设备启动要 3–5 分钟**：后端差异，不是卡死。启用 WSL2 / Hyper-V 时，VirtualBox 7.x 无法直接使用 VT-x，运行在 Hyper-V
 之上，启动会变慢。

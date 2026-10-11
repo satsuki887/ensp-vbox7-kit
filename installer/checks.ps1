@@ -654,9 +654,11 @@ function Test-VramTooSmall {
 
 # --- packet capture driver -------------------------------------------------
 #
-# eNSP recognises WinPcap only; Npcap's WinPcap compatibility layer is not
-# sufficient. Presence of Npcap therefore blocks a working capture path even
-# when WinPcap's files are also present.
+# WinPcap is the supported driver. Under Npcap's WinPcap compatibility layer
+# interface capture works but the Cloud device only offers UDP unless
+# patches/patch_pcap_version.py has been applied (docs/findings/cloud-npcap.md),
+# and upstream also reported device start failures. So Npcap owning the
+# system DLLs is still reported as a conflict.
 function ClassifyPacketDriver {
     param([string]$WinPcapVersion, [bool]$NpcapPresent, [bool]$PacketVersionTooNew)
     $hasWin = (-not [string]::IsNullOrEmpty($WinPcapVersion))
@@ -1201,8 +1203,9 @@ function Get-VBoxServerAclFacts {
 
 # --- packet capture driver -------------------------------------------------
 #
-# eNSP's capture path recognises WinPcap only. Npcap ships a WinPcap-compatible
-# wpcap.dll that eNSP does not accept, AND its presence blocks installing the
+# WinPcap is the supported driver. Npcap ships a WinPcap-compatible wpcap.dll /
+# packet.dll under which eNSP's Cloud device loses every host adapter (unless
+# patched, see ClassifyPacketDriver), AND its presence blocks installing the
 # real WinPcap ("a newer version is already installed"). So the two have to be
 # told apart, not merely detected.
 #

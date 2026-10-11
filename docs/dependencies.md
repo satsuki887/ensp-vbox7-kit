@@ -17,9 +17,11 @@
 VirtualBox 两个官方哈希可与同目录下的 `SHA256SUMS` 对照；`安装.bat` 在安装包里缺 `VAR_Plugin.dll`
 时会调用 Python 生成它。
 
-**抓包驱动的装法（重要）**：保留 WinPcap 4.1.3；Npcap 安装时**不要勾选** "WinPcap API-compatible Mode"。
-原因见 [`findings/cloud-npcap.md`](findings/cloud-npcap.md)。先装 Npcap 兼容模式再装 WinPcap 会被拒绝
-（"已有更新版本"），要恢复时顺序是：卸载 Npcap → 装 WinPcap → 重装 Npcap（不勾兼容模式）。
+**抓包驱动的装法（重要）**：推荐保留 WinPcap 4.1.3；Npcap 安装时**不要勾选** "WinPcap API-compatible Mode"。
+不打补丁时，Npcap 兼容模式下 Cloud 设备只剩 UDP；只想用 Npcap 的话，先以管理员运行
+`python patches\patch_pcap_version.py`（原因与验证见 [`findings/cloud-npcap.md`](findings/cloud-npcap.md)）。
+先装 Npcap 兼容模式再装 WinPcap 会被拒绝（"已有更新版本"），要恢复时顺序是：卸载 Npcap → 装 WinPcap →
+重装 Npcap（不勾兼容模式）。
 
 ## 编译 `VBox52.dll`（仅开发需要）
 

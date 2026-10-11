@@ -17,7 +17,7 @@
 | 1 | `VBox52.dll` | REPLACED | `…\Huawei\eNSP\tools\VBox52.dll` | COM/vtable 垫片。eNSP_VBoxServer.exe 加载它并调用 `GetVBoxInstance()`；它在真实 7.2 对象之上呈现一个 5.2 `IVirtualBox`。同时也充当 COM InprocServer32 类厂。 |
 | 2 | `VAR_Plugin.dll`（ar1000v） | PATCHED | `…\Huawei\eNSP\plugin\ar1000v\VAR_Plugin.dll` | AR 路由器插件通过写死的 5.2 vtable 偏移去调用真实的 7.2 `IVirtualBox`。没有这处 28 站点重映射补丁，AR 会打到错误的方法、一启动就崩。独立于 #1——AR 两者都需要。 |
 | 3 | 版本伪装 | REGISTRY | `HKLM\…\Oracle\VirtualBox` `Version`/`VersionExt`（两个视图） | eNSP 在 COM 之前的版本闸门只放行 `4.2`–`5.2`。它读的是 `VersionExt`（不是 `Version`），用 `KEY_WOW64_64KEY` 打开键；且读 `VersionExt` 时复用了 `InstallDir` 的缓冲区长度——`VersionExt` 比 `InstallDir` 长即读取失败，闸门报「未安装 VirtualBox」。两个值都写作 `5.2.44`，与 Oracle 安装器一致（不带构建号）。二进制其实是 `7.2.x`。 |
-| 4 | CLSID InprocServer32 | REGISTRY | `CLSID\{B1A7A4F2-…}\InprocServer32`（两个视图） | 把 `CLSID_VirtualBox` 的 32 位进程内服务器重指到 `VBox52.dll`，这样 eNSP 的 `CoCreateInstance` 加载的是我们的类厂，而非 VBox 原生的 proxy/stub。 |
+| 4 | CLSID InprocServer32 | REGISTRY | `WOW6432Node\CLSID\{B1A7A4F2-…}\InprocServer32`（只写 32 位视图） | 把 `CLSID_VirtualBox` 的 32 位进程内服务器重指到 `VBox52.dll`，这样 eNSP 的 `CoCreateInstance` 加载的是我们的类厂，而非 VBox 原生的 proxy/stub。64 位视图保持原样：往那里写指向 32 位 DLL 的项只会让 64 位客户端报 `0x800700C1`。 |
 四项都已对照一份活的、能工作的安装核验过（AR 起到 `<Huawei>`，AC6605 起到
 `<AC6605>`）。
 ### 曾经的候选：#5 `NGFW_Plugin.dll` —— 已剔除
@@ -63,6 +63,13 @@ VBoxHeadless 便不会创建那个 COM2 命名管道；eNSP 随后
 > 设备正常启动。
 
 
+## 修正件（不影响能否启动，修已知故障）
+
+| 改动 | 类型 | 位置 | 它修什么 |
+|------|------|------|----------|
+| SVRP 虚拟机 1 号网卡改挂空内部网络 | VM 配置 | `plugin\{svrp,cx,ne,ne5ke,ne9k}\Tools\Svrp\*.xml`（经 `VBoxManage modifyvm`，安装器第 7 步） | CE / CX / NE40E / NE5000E / NE9000 的 1 号网卡是“未连接 + virtio”，VirtualBox 7.x 下发送线程空转，关机卡 60 秒后崩溃。改挂 `ensp-unused-<VM>-nic<N>` 后关机 1 秒内完成。见 `findings/svrp-shutdown-crash.md`。 |
+| `eNSP_Cloud_Plugin.dll`、`eNSP_Client.exe` 的版本号与速率判断 | PATCHED（**可选，安装器不做**） | `…\eNSP\tools\`、`…\eNSP\` | 只在用 Npcap 代替 WinPcap 时需要：否则 Cloud 设备只剩 UDP。`patches\patch_pcap_version.py`。见 `findings/cloud-npcap.md`。 |
+
 ## 诊断件（非承重）
 
 | 改动 | 位置 | 它做什么 |
@@ -86,10 +93,12 @@ VBoxHeadless 便不会创建那个 COM2 命名管道；eNSP 随后
 
 | 改动 | 如何撤销 |
 |------|----------|
-| #1 `VBox52.dll` | 通过对 VBox 7.2 跑**修复**（或重装）来还原 VirtualBox 原生的 COM 注册——见 `registry/README.md`。把我们的 DLL 从 `eNSP\tools\` 移除。 |
+| #1 `VBox52.dll` | `卸载.bat`：`tools\` 与 `plugin\ngfw\tools\ngfw\` 从 `.orig.bak` 还原华为原版，eNSP 根目录与 `vboxserver\` 两处直接删除。COM 注册见 #4。 |
 | #2 `VAR_Plugin.dll` | `python patches\patch_var_plugin.py --restore <路径>`（或还原补丁器写的 `.bak`）。往返校验过能精确复现原始哈希。 |
 | #3 版本伪装 | `卸载.bat` —— 现场跑 `VBoxManage --version` 取真实版本后回填（没有静态 `.reg`：该值随机器而异）。 |
-| #4 CLSID InprocServer32 | 故意**不**作为 `.reg` 分发（正确的值随 Oracle 构建版本而异）。VBox **修复**/重装会把它改回原生 proxy/stub。见 `registry/README.md`。 |
+| #4 CLSID InprocServer32 | 故意**不**作为 `.reg` 分发（正确的值随 Oracle 构建版本而异）。原版 7.2.16 的 32 位视图里没有这个键，VBox **修复**也不会删它，需手动 `reg delete`，命令见根目录 `README.md`。 |
+| SVRP 网卡 | `卸载.bat` 改回“未连接”（按 `ensp-unused-` 前缀识别）。 |
+| Cloud 补丁 | `python patches\patch_pcap_version.py --restore`（卸载.bat 不处理）。 |
 
 ## 法务立场
 
