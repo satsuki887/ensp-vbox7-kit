@@ -69,14 +69,15 @@ if (Test-Path $fixPs1) { . $fixPs1 }
 # ---------------------------------------------------------------------------
 $CLSID_VBOX   = "{B1A7A4F2-47B9-4A1E-82B2-07CCD5323C3F}"  # CLSID_VirtualBox
 $DLL_NAME     = "VBox52.dll"
-$DLL_SHA256       = "3aafcae6ec8c3ec4b67a72254301504094236efeda59dc690b8e499309fd6276"
+$DLL_SHA256       = "fc9797c39cdc3fa5048280c1c05befad3ac553888e87b1410c65596347a7a8dc"
 # 历次发布过的垫片 DLL。升级安装时碰到它们要直接覆盖,不能当成"原文件"备份成
 # .orig.bak —— 否则 vboxserver\ 与根目录这两处(原本没有 VBox52.dll)会把旧垫片
 # 存成"原版",卸载时被"还原"回去而不是删掉。卸载也按这份清单认脸。
 $PREV_DLL_SHA256  = @(
     "6d2aadce202a740e128add181dcac1b81ae060c1b508f1a6d8cfdbb2fef69efe",  # upstream prebuilt
     "cbf5692bfb8ca2f181f380520735981d90c998b1874131d0162a61e0874b1a5a",  # race-free hook, sprintf DBG
-    "2fceb633a8b7fe7be48789a139d8834c6783eac95cf183035d537688ef62f135"   # + snprintf DBG
+    "2fceb633a8b7fe7be48789a139d8834c6783eac95cf183035d537688ef62f135",  # + snprintf DBG
+    "3aafcae6ec8c3ec4b67a72254301504094236efeda59dc690b8e499309fd6276"   # + kernelbase hot-patch (non-/Brepro build)
 )
 # NGFW_Plugin.dll 的三态哈希 —— 仅用于 Do-Check 报告状态,安装器不改这个文件。
 # 必要性未经证实:2026-09-10 在 inst-51 上做的受控 A/B 显示,出厂原版与 22 站点

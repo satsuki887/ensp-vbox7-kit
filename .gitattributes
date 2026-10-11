@@ -1,0 +1,8 @@
+# Batch files break (labels/goto) with LF-only line endings on some cmd.exe
+# versions; force CRLF in the working tree regardless of core.autocrlf.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Build outputs and payload binaries
+*.dll binary
+*.exe binary
