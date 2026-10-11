@@ -97,7 +97,11 @@ static const IID IID_IClassFactory =
 
 // ===== Debug logging =====
 #define DBG(fmt, ...) do { \
-    char _dbg_buf[512]; int _n = sprintf(_dbg_buf, "%lu [VBox52:%lu] " fmt "\n", GetTickCount(), GetCurrentProcessId(), ##__VA_ARGS__); \
+    /* snprintf, not sprintf: the CreateProcessW hook logs whole command lines \
+       (up to ~1.3 KB), and this build has /GS-, so an overflow here would    \
+       silently smash eNSP's stack. Long lines are truncated instead. */      \
+    char _dbg_buf[1024]; int _n = snprintf(_dbg_buf, sizeof(_dbg_buf), "%lu [VBox52:%lu] " fmt "\n", GetTickCount(), GetCurrentProcessId(), ##__VA_ARGS__); \
+    if (_n < 0 || _n >= (int)sizeof(_dbg_buf)) memcpy(_dbg_buf + sizeof(_dbg_buf) - 5, "...\n", 5); \
     OutputDebugStringA(_dbg_buf); \
     char _log_path[MAX_PATH]; \
     if (GetLogPath(_log_path, sizeof(_log_path), "vbox52_proxy.log")) { \
@@ -1325,7 +1329,7 @@ static HRESULT __stdcall CoGetClassObjectHook(REFCLSID rclsid, DWORD dwContext, 
     return g_real_CoGetClassObject(rclsid, dwContext, pvReserved, riid, ppv);
 }
 
-// CreateProcessW hook — entry-point detour on kernel32!CreateProcessW.
+// CreateProcessW hook — hot-patch on kernelbase!CreateProcessW (see install_createprocess_hook).
 // Catches ALL callers in the process (eNSP_VBoxServer.exe + NGFW_Plugin.dll),
 // which IAT hooking cannot do (NGFW has its own IAT entry).
 //
@@ -1338,11 +1342,21 @@ static HRESULT __stdcall CoGetClassObjectHook(REFCLSID rclsid, DWORD dwContext, 
 // NO synchronous wait: NGFW uses WaitForSingleObject(hProcess, 30000) on the
 // returned handle. If we block in the hook, NGFW's timer fires and it kills
 // the process. We return immediately after CreateProcessW so NGFW controls timing.
+//
+// The hook is installed once and never removed. g_real_CreateProcessW is set
+// before the hook goes live and never changes afterwards, so concurrent callers
+// (eNSP starting several devices at once) need no lock. The old version
+// unhooked/called/rehooked around every call: a second thread arriving inside
+// that window bypassed the hook (no UART2 injection -> USG fails to start), or
+// executed a half-written jmp.
 typedef BOOL (__stdcall *PFN_CreateProcessW)(LPCWSTR, LPWSTR, LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES,
     BOOL, DWORD, LPVOID, LPCWSTR, LPSTARTUPINFOW, LPPROCESS_INFORMATION);
-static PFN_CreateProcessW g_real_CreateProcessW = NULL;
-static BYTE g_original_bytes[5] = {0};
-static bool g_detour_installed = false;
+static PFN_CreateProcessW volatile g_real_CreateProcessW = NULL;
+// 0 = not installed, 1 = installing, 2 = done. install_iat_hook() is reached
+// from both GetVBoxInstance and Factory_CreateInstance, possibly concurrently;
+// a plain bool let two threads both install, and the second one saved the
+// first one's jmp as the "original bytes" -> infinite recursion on unhook.
+static volatile LONG g_hook_state = 0;
 
 // Log app + cmd using WideCharToMultiByte (sprintf %S is unreliable for complex strings).
 static void log_createprocess(LPCWSTR app, LPCWSTR cmd) {
@@ -1404,45 +1418,130 @@ static BOOL __stdcall CreateProcessWHook(LPCWSTR app, LPWSTR cmd, LPSECURITY_ATT
     LPWSTR modified_cmd = inject_vm_config(cmd);
     LPWSTR exec_cmd = modified_cmd ? modified_cmd : cmd;
 
-    // Uninstall detour to call the real function (brief window; acceptable
-    // since we no longer block — the race only risks missing a hook log, not
-    // a crash).
-    DWORD oldProtect;
-    VirtualProtect((LPVOID)g_real_CreateProcessW, 5, PAGE_EXECUTE_READWRITE, &oldProtect);
-    memcpy((LPVOID)g_real_CreateProcessW, g_original_bytes, 5);
-    VirtualProtect((LPVOID)g_real_CreateProcessW, 5, oldProtect, &oldProtect);
     BOOL result = g_real_CreateProcessW(app, exec_cmd, pa, ta, ih, flags, env, dir, si, pi);
-    // Re-install detour
-    VirtualProtect((LPVOID)g_real_CreateProcessW, 5, PAGE_EXECUTE_READWRITE, &oldProtect);
-    BYTE jmp[5] = { 0xE9, 0,0,0,0 };
-    *(DWORD*)(jmp+1) = (DWORD)(DWORD_PTR)CreateProcessWHook - (DWORD)(DWORD_PTR)g_real_CreateProcessW - 5;
-    memcpy((LPVOID)g_real_CreateProcessW, jmp, 5);
-    VirtualProtect((LPVOID)g_real_CreateProcessW, 5, oldProtect, &oldProtect);
 
     // NO synchronous wait — NGFW controls process lifetime via its own WaitForSingleObject.
-    if (modified_cmd) HeapFree(GetProcessHeap(), 0, modified_cmd);
+    if (modified_cmd) {
+        DWORD err = GetLastError();   // callers read it when result is FALSE
+        HeapFree(GetProcessHeap(), 0, modified_cmd);
+        SetLastError(err);
+    }
     return result;
 }
 
-static void install_iat_hook() {
-    if (g_detour_installed) return;
-    HMODULE hK32 = GetModuleHandleA("kernel32.dll");
-    if (!hK32) return;
-    g_real_CreateProcessW = (PFN_CreateProcessW)GetProcAddress(hK32, "CreateProcessW");
-    if (!g_real_CreateProcessW) return;
-    // Save original bytes
-    memcpy(g_original_bytes, g_real_CreateProcessW, 5);
-    // Install detour: jmp offset = target - source - 5
-    BYTE jmp[5] = { 0xE9, 0,0,0,0 };
-    *(DWORD*)(jmp+1) = (DWORD)(DWORD_PTR)CreateProcessWHook - (DWORD)(DWORD_PTR)g_real_CreateProcessW - 5;
-    DWORD oldProtect;
-    VirtualProtect((LPVOID)g_real_CreateProcessW, 5, PAGE_EXECUTE_READWRITE, &oldProtect);
-    memcpy((LPVOID)g_real_CreateProcessW, jmp, 5);
-    VirtualProtect((LPVOID)g_real_CreateProcessW, 5, oldProtect, &oldProtect);
-    g_detour_installed = true;
-    DBG("[Hook] CreateProcessW detour installed: original=%p patch=%p", g_real_CreateProcessW, CreateProcessWHook);
+static bool address_in_module(const void* p, HMODULE mod) {
+    HMODULE owner = NULL;
+    return GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                              GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                              (LPCWSTR)p, &owner) && owner == mod;
+}
 
-    // Also hook CoGetClassObject via IAT (already works for exe; ngfw may call via COM)
+// On Win8+ x86, kernel32!CreateProcessW is a forwarding stub into kernelbase:
+//   8B FF  mov edi,edi / 55 push ebp / 8B EC mov ebp,esp / 5D pop ebp
+//   FF 25 <slot>  jmp dword ptr [__imp_CreateProcessW]
+// Returns the address of that import slot, or NULL if the stub looks different.
+static PFN_CreateProcessW* find_stub_import_slot(const BYTE* p, HMODULE hK32) {
+    static const BYTE prologue[] = { 0x8B, 0xFF, 0x55, 0x8B, 0xEC, 0x5D };
+    if (memcmp(p, prologue, sizeof(prologue)) == 0) p += sizeof(prologue);
+    if (p[0] != 0xFF || p[1] != 0x25) return NULL;
+    PFN_CreateProcessW* slot = *(PFN_CreateProcessW* const*)(p + 2);
+    if (!address_in_module(slot, hK32) || !*slot) return NULL;
+    return slot;
+}
+
+// GetProcAddress cannot be trusted for this: under an AppCompat layer (eNSP_Client
+// is commonly set to "Windows 7 + run as administrator", which eNSP_VBoxServer
+// inherits) the shim engine hands back its own wrapper for kernel32 AND
+// kernelbase alike. Walk the export table ourselves to reach the real code.
+// Returns NULL for a missing name or a forwarded export.
+static void* find_export(HMODULE mod, const char* name) {
+    PBYTE base = (PBYTE)mod;
+    PIMAGE_NT_HEADERS nt = (PIMAGE_NT_HEADERS)(base + ((PIMAGE_DOS_HEADER)base)->e_lfanew);
+    IMAGE_DATA_DIRECTORY dd = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (!dd.VirtualAddress || !dd.Size) return NULL;
+    PIMAGE_EXPORT_DIRECTORY ed = (PIMAGE_EXPORT_DIRECTORY)(base + dd.VirtualAddress);
+    const DWORD* names = (const DWORD*)(base + ed->AddressOfNames);
+    const WORD*  ords  = (const WORD*)(base + ed->AddressOfNameOrdinals);
+    const DWORD* funcs = (const DWORD*)(base + ed->AddressOfFunctions);
+    for (DWORD i = 0; i < ed->NumberOfNames; i++) {
+        if (strcmp((const char*)(base + names[i]), name) != 0) continue;
+        if (ords[i] >= ed->NumberOfFunctions) return NULL;
+        DWORD rva = funcs[ords[i]];
+        if (rva >= dd.VirtualAddress && rva < dd.VirtualAddress + dd.Size) return NULL;  // forwarder
+        return base + rva;
+    }
+    return NULL;
+}
+
+// Microsoft hot-patch hook: functions built /hotpatch start with a 2-byte
+// `mov edi,edi` and are preceded by >= 5 bytes of int3/nop padding. Put a
+// `jmp hook` into the padding, then swap `mov edi,edi` for `jmp $-5` with one
+// aligned 16-bit write -- atomic, so no thread ever executes a torn instruction.
+// The original stays callable at entry+2 (mov edi,edi is a no-op).
+static bool hotpatch(BYTE* entry, void* hook, void** original) {
+    if (entry[0] != 0x8B || entry[1] != 0xFF) return false;
+    for (int i = 1; i <= 5; i++)
+        if (entry[-i] != 0xCC && entry[-i] != 0x90) return false;
+    if ((DWORD_PTR)entry & 1) return false;   // 16-bit write must be aligned to be atomic
+    DWORD oldProtect;
+    if (!VirtualProtect(entry - 5, 7, PAGE_EXECUTE_READWRITE, &oldProtect)) return false;
+    *original = entry + 2;
+    entry[-5] = 0xE9;
+    *(DWORD*)(entry - 4) = (DWORD)(DWORD_PTR)hook - (DWORD)(DWORD_PTR)entry;
+    InterlockedExchange16((SHORT volatile*)entry, (SHORT)0xF9EB);   // EB F9 = jmp $-5
+    VirtualProtect(entry - 5, 7, oldProtect, &oldProtect);
+    FlushInstructionCache(GetCurrentProcess(), entry - 5, 7);
+    return true;
+}
+
+static void install_createprocess_hook() {
+    // Preferred: hot-patch kernelbase!CreateProcessW, the bottom of every path --
+    // kernel32's stub, AppCompat shim wrappers and direct api-set callers all end here.
+    HMODULE hKB = GetModuleHandleA("kernelbase.dll");
+    BYTE* kb = hKB ? (BYTE*)find_export(hKB, "CreateProcessW") : NULL;
+    void* real = NULL;
+    if (kb && hotpatch(kb, (void*)CreateProcessWHook, &real)) {
+        g_real_CreateProcessW = (PFN_CreateProcessW)real;
+        DBG("[Hook] CreateProcessW hooked via kernelbase hot-patch at %p: real=%p patch=%p",
+            kb, real, CreateProcessWHook);
+        return;
+    }
+
+    // Fallback: swap kernel32's stub import slot (atomic pointer write). Covers
+    // everything except callers that bypass kernel32.
+    HMODULE hK32 = GetModuleHandleA("kernel32.dll");
+    BYTE* stub = hK32 ? (BYTE*)find_export(hK32, "CreateProcessW") : NULL;
+    PFN_CreateProcessW* slot = stub ? find_stub_import_slot(stub, hK32) : NULL;
+    DWORD oldProtect;
+    if (slot && VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &oldProtect)) {
+        g_real_CreateProcessW = *slot;
+        InterlockedExchangePointer((PVOID volatile*)slot, (PVOID)CreateProcessWHook);
+        VirtualProtect(slot, sizeof(*slot), oldProtect, &oldProtect);
+        DBG("[Hook] CreateProcessW hooked via kernel32 import slot %p: real=%p patch=%p",
+            slot, g_real_CreateProcessW, CreateProcessWHook);
+        return;
+    }
+    DBG("[Hook] CreateProcessW hook NOT installed: kernelbase=%p (not hot-patchable), kernel32 stub=%p (unknown layout)",
+        kb, stub);
+}
+
+static void install_cogetclassobject_hook();
+
+static void install_iat_hook() {
+    LONG prev = InterlockedCompareExchange(&g_hook_state, 1, 0);
+    if (prev == 2) return;
+    if (prev == 1) {
+        // Another thread is installing; wait so our caller never runs unhooked.
+        while (g_hook_state != 2) Sleep(1);
+        return;
+    }
+    install_createprocess_hook();
+    install_cogetclassobject_hook();
+    InterlockedExchange(&g_hook_state, 2);
+}
+
+// Also hook CoGetClassObject via IAT (already works for exe; ngfw may call via COM)
+static void install_cogetclassobject_hook() {
     HMODULE hExe = GetModuleHandleA(NULL);
     if (!hExe) return;
     PBYTE base = (PBYTE)hExe;
@@ -1459,10 +1558,10 @@ static void install_iat_hook() {
             PIMAGE_IMPORT_BY_NAME importByName = (PIMAGE_IMPORT_BY_NAME)(base + intThunk->u1.AddressOfData);
             const char* fname = (const char*)importByName->Name;
             if (_stricmp(dllName, "ole32.dll") == 0 && strcmp(fname, "CoGetClassObject") == 0) {
-                g_real_CoGetClassObject = (PFN_CoGetClassObject)iatThunk->u1.Function;
                 DWORD oldProtect2;
-                VirtualProtect(&iatThunk->u1.Function, sizeof(void*), PAGE_READWRITE, &oldProtect2);
-                iatThunk->u1.Function = (DWORD_PTR)CoGetClassObjectHook;
+                if (!VirtualProtect(&iatThunk->u1.Function, sizeof(void*), PAGE_READWRITE, &oldProtect2)) break;
+                g_real_CoGetClassObject = (PFN_CoGetClassObject)iatThunk->u1.Function;
+                InterlockedExchangePointer((PVOID volatile*)&iatThunk->u1.Function, (PVOID)CoGetClassObjectHook);
                 VirtualProtect(&iatThunk->u1.Function, sizeof(void*), oldProtect2, &oldProtect2);
                 DBG("[Hook] CoGetClassObject IAT hooked: original=%p", g_real_CoGetClassObject);
                 break;
@@ -1549,3 +1648,9 @@ extern "C" HRESULT __stdcall DllGetClassObject(REFCLSID rclsid, REFIID riid, voi
 extern "C" HRESULT __stdcall DllCanUnloadNow() {
     return S_FALSE;
 }
+
+#ifdef SHIM_SELFTEST
+// Test-only entry point (build with /DSHIM_SELFTEST): lets a harness install
+// the hooks without a live VBoxSVC 7.2. Never present in release builds.
+extern "C" __declspec(dllexport) void __stdcall ShimSelfTest_InstallHooks() { install_iat_hook(); }
+#endif
