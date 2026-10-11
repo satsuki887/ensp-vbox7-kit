@@ -232,10 +232,42 @@ function Grant-VBoxServerWrite([string]$EnspDir, [string]$GrantSid) {
 # 详见 docs/findings/svrp-shutdown-crash.md。
 #
 # 只动配置文件在 eNSP 目录下、且 nicN=null + nictypeN=virtio 的 VM;intnet 名
-# 带 ensp-unused- 前缀,卸载时据此认出并改回 null。必须在提权侧跑:这些 VM 的
-# .xml 在 Program Files 里,而 eNSP(RUNASADMIN)用的也是提权的 VBoxSVC。
+# 带 ensp-unused- 前缀,卸载时据此认出并改回 null。
+#
+# 权限:这些 VM 的 .xml 在 Program Files 里,真正写文件的是 VBoxSVC,不是 VBoxManage。
+# VirtualBox 7 每个用户只有一个 VBoxSVC(经 VBoxSDS 共享),它的权限取决于【谁先
+# 把它拉起来】。提权的 VBoxManage 若连上一个普通权限的 VBoxSVC,modifyvm 照样
+# VERR_ACCESS_DENIED(2026-10-11 实测)。所以先等普通权限的 VBoxSVC 自行退出,
+# 等不到就报清楚该怎么做,不去硬改。
 # ---------------------------------------------------------------------------
 $UNUSED_INTNET_PREFIX = "ensp-unused-"
+
+# 返回仍在运行、且【未提权】的 VBoxSVC 的 PID。打不开令牌的按"未知"处理,不算在内。
+function Get-NonElevatedVBoxSvc {
+    if (-not ("EnspTokenProbe" -as [type])) {
+        Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+public static class EnspTokenProbe {
+    [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(int a, bool i, int pid);
+    [DllImport("advapi32.dll", SetLastError=true)] static extern bool OpenProcessToken(IntPtr p, int a, out IntPtr t);
+    [DllImport("advapi32.dll", SetLastError=true)] static extern bool GetTokenInformation(IntPtr t, int c, out int v, int l, out int r);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+    // 1 = elevated, 0 = not elevated, -1 = unknown
+    public static int IsElevated(int pid) {
+        IntPtr p = OpenProcess(0x1000, false, pid); if (p == IntPtr.Zero) return -1;
+        IntPtr t; int r = -1;
+        if (OpenProcessToken(p, 0x8, out t)) {
+            int v, len; if (GetTokenInformation(t, 20, out v, 4, out len)) r = v != 0 ? 1 : 0;
+            CloseHandle(t);
+        }
+        CloseHandle(p); return r;
+    }
+}
+'@
+    }
+    return @(Get-Process VBoxSVC -ErrorAction SilentlyContinue |
+        Where-Object { [EnspTokenProbe]::IsElevated($_.Id) -eq 0 } | ForEach-Object { $_.Id })
+}
 
 # 这两个函数里的 VBoxManage 调用都把 $ErrorActionPreference 局部降为 Continue:
 # Windows PowerShell 5.1 在 Stop 下会把原生命令的 stderr(哪怕 2>$null)变成终止
@@ -255,8 +287,21 @@ function Set-UnattachedVirtioNics {
     $ErrorActionPreference = "Continue"
     $vbm = Join-Path $VBoxDir "VBoxManage.exe"
     if (-not $VBoxDir -or -not (Test-Path $vbm)) { Write-Warn "未找到 VBoxManage.exe,跳过。"; return }
+
+    # 普通权限的 VBoxSVC 没有客户端后几秒内会自己退出;本脚本前面的检测、安装前的
+    # 非提权检查都可能刚拉起过它。最多等 30 秒。
+    $deadline = (Get-Date).AddSeconds(30)
+    while (($svc = Get-NonElevatedVBoxSvc).Count -gt 0 -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+    if ($svc.Count -gt 0) {
+        Write-Err "有以普通权限运行的 VBoxSVC(PID $($svc -join ', ')),改不了 Program Files 里的 VM 配置,本步跳过。"
+        Write-Err "请关闭 eNSP 和 VirtualBox 管理器,在任务管理器里结束 VBoxSVC.exe 后重跑安装。"
+        Write-Err "它也会让 CE/NE 启动超时(日志写不进 Program Files),见 docs/findings/svrp-shutdown-crash.md。"
+        return
+    }
+
     $root = (Resolve-Path $EnspDir).Path.TrimEnd('\') + '\'
     $changed = 0
+    $failed = 0
     foreach ($l in @(& $vbm list vms 2>$null)) {
         $m = [regex]::Match("$l", '\{([0-9a-fA-F-]+)\}\s*$')
         if (-not $m.Success) { continue }
@@ -277,13 +322,19 @@ function Set-UnattachedVirtioNics {
         if ($mods.Count -eq 0) { continue }
         if (@("poweroff", "aborted") -notcontains $info["VMState"]) {
             Write-Warn "$name 当前状态为 $($info["VMState"]),跳过(请关闭 eNSP 后重跑)。"
+            $failed++
             continue
         }
-        & $vbm modifyvm $info["UUID"] @mods 2>$null | Out-Null
+        $out = "$(& $vbm modifyvm $info["UUID"] @mods 2>&1)"
         if ($LASTEXITCODE -eq 0) { Write-OK "$name : $($mods -join ' ')"; $changed++ }
-        else { Write-Err "$name : modifyvm 失败(rc=$LASTEXITCODE)" }
+        else {
+            $failed++
+            $why = if ($out -match 'VERR_ACCESS_DENIED') { "写配置被拒绝,VBoxSVC 可能是普通权限" } else { "rc=$LASTEXITCODE" }
+            Write-Err "$name : modifyvm 失败($why)"
+        }
     }
-    if ($changed -eq 0) { Write-OK "无需改动(没有符合条件的网卡)" }
+    if ($failed -gt 0) { Write-Err "$failed 台未改成功;关闭 eNSP、结束 VBoxSVC.exe 后重跑安装即可补上。" }
+    elseif ($changed -eq 0) { Write-OK "无需改动(没有符合条件的网卡,或已改过)" }
 }
 
 # ---------------------------------------------------------------------------

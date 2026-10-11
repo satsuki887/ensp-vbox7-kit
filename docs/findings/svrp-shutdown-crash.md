@@ -1,7 +1,7 @@
 # CE / NE 等 SVRP 设备关机时 VBoxHeadless 崩溃
 
-**状态：根因已定位（VirtualBox 7.x virtio-net 对"未连接"网卡的 bug），安装器第 7 步规避；
-已在 CE 的克隆上 A/B 验证，待 eNSP 内回归** · 记录于 2026-10-11 · VirtualBox 7.2.16
+**状态：已修复（安装器第 7 步规避 VirtualBox 7.x virtio-net 对"未连接"网卡的 bug），
+eNSP 内 CE6800 / NE40E 启动、save、关机已回归** · 记录于 2026-10-11 · VirtualBox 7.2.16
 
 与垫片无关：崩溃的是 VirtualBox 自己的 64 位 `VBoxHeadless.exe`，32 位的 `VBox52.dll` 不会加载进这个进程。
 
@@ -83,10 +83,33 @@ VirtualBox 7.2.18 / 7.2.20 的 changelog 里没有相关修复（只有 NAT 端�
 
 - 只改 `null + virtio`，其它网卡（包括 `null + e1000`）不动；VM 不在 `poweroff`/`aborted` 状态时跳过并提示。
 - 卸载时按 `ensp-unused-` 前缀认出来，改回 `null`。
-- 必须在提权侧跑：这些 `.xml` 在 Program Files 里，而 eNSP（RUNASADMIN）用的也是提权的 VBoxSVC。
-- 测试：`tools/dev/installer-tests/test_svrp_nic.ps1`（建一台临时空 VM，验证安装/卸载两个方向）。
+- 先等普通权限的 VBoxSVC 退出（最多 30 秒），等不到就跳过并提示，见下一节。
+- 测试：`tools/dev/installer-tests/test_svrp_nic.ps1`（建一台临时空 VM，验证安装/卸载两个方向和上面的跳过逻辑）。
 
-**还没做的**：在 eNSP 里完整跑一遍 CE / NE 的启动、配置、保存、关机。
+### eNSP 内回归（2026-10-11 12:35–12:44）
+
+| | CE6800 | NE40E |
+|---|---|---|
+| 启动到 `started OK` | 75 s（与修复前相当） | 139 s（修复前 199 s） |
+| 运行中最忙线程 60 s 内用户态 CPU | 0.0 s | 0.0 s |
+| `save` | 正常 | 正常 |
+| 关闭 eNSP 后 power off | **0.25 s**，`TERMINATED`，进程随即退出 | **6 ms**，同上 |
+| 结束状态 | `poweroff`（修复前是 `aborted`） | `poweroff` |
+
+注意：eNSP 里"停止设备"只让客机里的路由器进程停下（`send stop message` / `stop ok`），
+虚拟机仍在运行；**关闭 eNSP 时**插件才发 `controlvm … poweroff`。以前的崩溃都是关 eNSP 后约 3 分钟出现。
+
+## VBoxSVC 的权限决定 SVRP 设备能否启动
+
+VirtualBox 7 每个用户只有一个 VBoxSVC（经 VBoxSDS 共享），它的权限取决于**谁先把它拉起来**，
+之后不论客户端是否提权都连到这一个。SVRP 设备的配置和日志都在 Program Files 下：
+
+- VBoxSVC 是普通权限时，VBoxHeadless 写不了 `plugin\*\Tools\Svrp\Logs\`，`startvm` 一启动即退出，
+  eNSP 里 CE/NE 停在 `###` 后报**启动超时**；安装器第 7 步的 `modifyvm` 报 `VERR_ACCESS_DENIED`。
+- AR / 交换机 / WLAN 等不受影响：它们的文件在用户目录或已授权的 `vboxserver\`。
+- 2026-10-11 实际踩到：一次非提权的 VBoxManage 操作留下的 VBoxSVC 被随后打开的 eNSP 沿用。
+  关闭 eNSP、在任务管理器里结束 `VBoxSVC.exe` 后重开即恢复。没有客户端时 VBoxSVC 几秒内会自行退出，
+  所以关掉 VirtualBox 管理器 / 跑完 VBoxManage 后稍等再开 eNSP 即可。
 
 ## 附带问题：旧实例未退出时重开同型设备，插件会卡死
 

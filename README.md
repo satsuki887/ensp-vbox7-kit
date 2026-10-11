@@ -108,7 +108,7 @@ eNSP 只认 VirtualBox 5.2，而 5.2 在新版 Windows 上装不上、不稳定�
 |---|---|---|
 | IVirtualBox 方法区槽位整体少算 12（影响 `VAR_Plugin` 补丁、代理方法区、IMachine 映射） | 已确认；AR 实际可用 | [`vtable-reserved-slots.md`](docs/findings/vtable-reserved-slots.md) |
 | Cloud 设备不支持 Npcap 兼容模式 | 根因已定位；补丁器 `patches/patch_pcap_version.py` 待真机验证 | [`cloud-npcap.md`](docs/findings/cloud-npcap.md) |
-| CE / NE 关机卡 60 秒后 `VBoxDD.DLL` 崩溃；旧实例未退出时重开导致插件卡死 | 根因为 VirtualBox virtio-net 对未连接网卡的 bug；安装器第 7 步规避，待 eNSP 内回归 | [`svrp-shutdown-crash.md`](docs/findings/svrp-shutdown-crash.md) |
+| CE / NE 关机卡 60 秒后 `VBoxDD.DLL` 崩溃；旧实例未退出时重开导致插件卡死 | **已修复**：根因为 VirtualBox virtio-net 对未连接网卡的 bug，安装器第 7 步规避（CE / NE 已在 eNSP 内回归） | [`svrp-shutdown-crash.md`](docs/findings/svrp-shutdown-crash.md) |
 | VirtualBox 5.2.44 导致 0xD1 蓝屏 | **已解决**（本项目的起点） | [`bsod-vbox52.md`](docs/findings/bsod-vbox52.md) |
 
 遇到问题请先运行 `installer\环境检查.bat`，再把生成的报告附在

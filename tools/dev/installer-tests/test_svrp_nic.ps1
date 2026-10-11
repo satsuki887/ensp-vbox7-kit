@@ -8,7 +8,8 @@
     throw-away diskless VM under a temp directory that stands in for the eNSP
     directory, and checks both directions:
 
-      install    nic1 null+virtio  -> intnet ensp-unused-<vm>-nic1
+      guard      an unelevated VBoxSVC stays up -> step skipped, nothing changed
+    install    nic1 null+virtio  -> intnet ensp-unused-<vm>-nic1
                  nic2 nat+virtio   -> unchanged
                  nic3 null+82540EM -> unchanged (only virtio is affected)
       uninstall  nic1              -> null again; nic2 / nic3 unchanged
@@ -28,6 +29,11 @@ foreach ($name in 'Set-UnattachedVirtioNics','Get-VmInfoMap','Write-OK','Write-I
 }
 $as = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$UNUSED_INTNET_PREFIX' }, $true)
 . ([scriptblock]::Create($as.Extent.Text))
+# This test runs unelevated, so the VBoxSVC it starts is unelevated too -- which
+# is fine here (the temp VM's settings file is ours) but would trip the real
+# guard. Stub the probe; $script:fakeSvc drives the "unelevated VBoxSVC" case.
+$script:fakeSvc = @()
+function Get-NonElevatedVBoxSvc { return $script:fakeSvc }
 
 $vboxDir = (Get-ItemProperty "HKLM:\SOFTWARE\Oracle\VirtualBox" -ErrorAction SilentlyContinue).InstallDir
 if (-not $vboxDir) { $vboxDir = "C:\Program Files\Oracle\VirtualBox\" }
@@ -48,6 +54,14 @@ function Expect($label, $key, $want) {
     if (-not $ok) { $script:fail++ }
 }
 try {
+    # An unelevated VBoxSVC that does not go away: the step must skip, not modify.
+    $script:fakeSvc = @(99999)
+    $t0 = Get-Date
+    Set-UnattachedVirtioNics -VBoxDir $vboxDir -EnspDir $sb *>&1 | Out-Null
+    Expect 'unelevated svc, skip' 'nic1' 'null'
+    "        (waited {0:N0} s before giving up)" -f ((Get-Date) - $t0).TotalSeconds
+    $script:fakeSvc = @()
+
     Set-UnattachedVirtioNics -VBoxDir $vboxDir -EnspDir $sb | Out-Null
     Expect 'install'   'nic1'    'intnet'
     Expect 'install'   'intnet1' "$UNUSED_INTNET_PREFIX$vm-nic1"

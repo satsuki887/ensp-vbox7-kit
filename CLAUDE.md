@@ -44,6 +44,8 @@ powershell -File tools\dev\installer-tests\test_svrp_nic.ps1 :: 第 7 步 SVRP �
   选择解析方式（`patches/patch_pcap_version.py` 把它写死为 4，见 `cloud-npcap.md`）。
 - CE/CX/NE（SVRP）关机卡死崩溃：VirtualBox 7.x virtio-net 对未连接（null）网卡的发送死循环，与垫片无关；
   安装器第 7 步把这类网卡改挂空 intnet（`ensp-unused-*`）规避。
+- VBoxSVC 每用户一个，权限由第一个拉起它的客户端决定。普通权限的 VBoxSVC 在跑时，CE/NE 启动超时
+  （日志写不进 Program Files）。**在本机跑 VBoxManage 实验后要等 VBoxSVC 退出再让用户开 eNSP。**
 
 ## 文件与编码约定
 

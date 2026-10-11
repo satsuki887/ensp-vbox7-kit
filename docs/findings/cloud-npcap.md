@@ -1,7 +1,8 @@
 # Cloud 设备不认 Npcap（兼容模式下只剩 UDP）
 
-**状态：原因已定位，补丁器已就绪（`patches/patch_pcap_version.py`），待真机验证**；
-当前仍用"WinPcap 4.1.3 + 非兼容模式 Npcap"规避 · 记录于 2026-10-11
+**状态：原因已定位，补丁器已就绪（`patches/patch_pcap_version.py`）**；2026-10-11 本机已给
+Cloud 插件和 eNSP_Client 打上补丁，用户反馈 Cloud 与抓包正常。Npcap 下的 A/B 记录待补全；
+当前仍用"WinPcap 4.1.3 + 非兼容模式 Npcap" · 记录于 2026-10-11
 
 ## 现象
 
