@@ -12,13 +12,16 @@
 | `patch_pcap_version.py` | 让 Cloud 插件 / eNSP_Client 把任何抓包驱动当成 WinPcap 4.x（Cloud 支持 Npcap） |
 | `var_plugin_ar1000v.md` | 完整规格：28 个调用站点、槽位推导、指令形态 |
 
-## eNSP_Cloud_Plugin.dll / eNSP_Client.exe（Cloud + Npcap）—— 待真机验证，不在安装范围内
+## eNSP_Cloud_Plugin.dll / eNSP_Client.exe（Cloud + Npcap）—— 已验证，不在安装范围内
 
-这两个模块用 `PacketGetVersion()[0] - '0' == 4` 判断网卡列表的编码和 `NetType` 的布局。Npcap
-返回 `"1.89"`，主版本被算成 1，网卡全被丢弃，Cloud 只剩 UDP。补丁器把算主版本的那条指令
-改成 `mov reg, 4`（每个文件 6 字节），WinPcap 4.x 下行为不变。`--devices` 会连
-AR / S3700 / S5700 / USG5500 的宿主侧设备进程一起补（同样的检查，目前没对应到可见症状）。
-原理、补丁表与验证步骤见 [`docs/findings/cloud-npcap.md`](../docs/findings/cloud-npcap.md)。
+Npcap 下 Cloud 只剩 UDP，有两个原因：
+- 这两个模块用 `PacketGetVersion()[0] - '0' == 4` 判断网卡列表的编码和 `NetType` 的布局，Npcap 返回 `"1.89"`；
+- 它们只保留 `LinkSpeed >= 10 Mbps` 的网卡，而 Npcap 对所有网卡都报 0。
+
+补丁器把主版本号写死为 4，并把速率检查改成"速率为 0 时放行"（Cloud 3 处、Client 2 处，都是等长替换）。
+WinPcap 4.x 下行为不变。`--devices` 会连 AR / S3700 / S5700 / USG5500 的宿主侧设备进程一起补
+（只有版本号检查，目前没对应到可见症状）。2026-10-11 已在 eNSP 内用 Npcap 1.89 验证。
+原理、补丁表与验证方法见 [`docs/findings/cloud-npcap.md`](../docs/findings/cloud-npcap.md)。
 
 ```bat
 :: 查看（只读）
@@ -29,7 +32,8 @@ python patch_pcap_version.py
 python patch_pcap_version.py --restore
 ```
 
-安全保证同下：只认已知的出厂 / 补丁后 SHA-256，写前逐字节核对，默认留 `.bak`。
+安全保证：各补丁点恢复为出厂字节后，整个文件的哈希必须等于已知的出厂 SHA-256（因此出厂、全补、部分补都认得），
+写完的结果必须等于已知的目标哈希，默认留 `.bak`。
 
 ## VAR_Plugin.dll（ar1000v）
 

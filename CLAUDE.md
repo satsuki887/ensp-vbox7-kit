@@ -22,6 +22,7 @@ build\build.bat selftest           :: 测试版 -> build\selftest\VBox52.dll
 tools\dev\hooktest\run.bat         :: hook 并发 + AppCompat 矩阵，必须 ALL PASSED
 tools\dev\vboxprobe\run.bat        :: 真实虚表布局；升级 VirtualBox 后先跑它再信任任何槽位表
 tools\dev\pcapprobe\run.bat        :: packet.dll 返回值（Cloud / Npcap 相关）
+tools\dev\pcapprobe\cloud.bat      :: 直接调用 Cloud 插件的网卡枚举（WinPcap / Npcap 各跑一次）
 powershell -File tools\dev\installer-tests\test_deploy.ps1   :: 安装器升级/卸载逻辑
 powershell -File tools\dev\installer-tests\test_svrp_nic.ps1 :: 第 7 步 SVRP 网卡改挂（建临时 VM，需 VirtualBox）
 ```
@@ -40,8 +41,9 @@ powershell -File tools\dev\installer-tests\test_svrp_nic.ps1 :: 第 7 步 SVRP �
 - VirtualBox 7.2 的 IVirtualBox 方法区从槽位 **48** 开始（36–47 是 12 个保留属性）。`src/vbox52_thunks.asm`
   方法区、`wrap_*`、`patches/patch_var_plugin.py` 仍按少 12 的旧表，属已知问题，修改前读
   `docs/findings/vtable-reserved-slots.md`。
-- 抓包驱动：WinPcap 4.1.3 + Npcap **非兼容模式**；Cloud 插件和 eNSP_Client 按 `PacketGetVersion()[0]=='4'`
-  选择解析方式（`patches/patch_pcap_version.py` 把它写死为 4，见 `cloud-npcap.md`）。
+- 抓包驱动：WinPcap 4.1.3 + Npcap **非兼容模式**。Cloud 插件和 eNSP_Client 按 `PacketGetVersion()[0]=='4'`
+  选解析方式，并丢弃 `LinkSpeed < 10 Mbps` 的网卡，而 Npcap 对所有网卡都报 0；
+  `patches/patch_pcap_version.py` 两处都改（见 `cloud-npcap.md`）。
 - CE/CX/NE（SVRP）关机卡死崩溃：VirtualBox 7.x virtio-net 对未连接（null）网卡的发送死循环，与垫片无关；
   安装器第 7 步把这类网卡改挂空 intnet（`ensp-unused-*`）规避。
 - VBoxSVC 每用户一个，权限由第一个拉起它的客户端决定。普通权限的 VBoxSVC 在跑时，CE/NE 启动超时

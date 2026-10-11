@@ -1,8 +1,7 @@
-# Cloud 设备不认 Npcap（兼容模式下只剩 UDP）
+# Cloud 设备不认 Npcap（只剩 UDP）
 
-**状态：原因已定位，补丁器已就绪（`patches/patch_pcap_version.py`）**；2026-10-11 本机已给
-Cloud 插件和 eNSP_Client 打上补丁，用户反馈 Cloud 与抓包正常。Npcap 下的 A/B 记录待补全；
-当前仍用"WinPcap 4.1.3 + 非兼容模式 Npcap" · 记录于 2026-10-11
+**状态：已修复，补丁器 `patches/patch_pcap_version.py`**；2026-10-11 在 eNSP 内用 Npcap 1.89 验证：
+Cloud 能列出并绑定本机网卡，抓包正常。WinPcap 4.1.3 下行为不变 · 记录于 2026-10-11
 
 ## 现象
 
@@ -11,91 +10,85 @@ Cloud 插件和 eNSP_Client 打上补丁，用户反馈 Cloud 与抓包正常。
 - eNSP 的接口抓包（Wireshark）**正常**
 - Cloud 设备的端口绑定里**只有 UDP**，看不到任何本机网卡
 
-装回 WinPcap 4.1.3、Npcap 改为非兼容模式后，两者都正常。上游诊断脚本也记录了
-"eNSP 的抓包只认 WinPcap；Npcap 的兼容层不被接受"，但没有说明原因。
+上游诊断脚本也记录了"eNSP 的抓包只认 WinPcap；Npcap 的兼容层不被接受"，但没有说明原因。
 
-## 原因
+## 原因：两道关
 
-Cloud 由 `tools\eNSP_Cloud_Plugin.dll`（32 位）实现，直接用 `packet.dll` 的底层接口
-（`PacketGetAdapterNames`、`PacketGetVersion`、`PacketOpenAdapter`、`PacketGetNetType` …）。
-网卡枚举函数里是 WinPcap 官方示例的老写法（地址为 eNSP V100R003C00SPC100 自带的这份 DLL）：
+Cloud 由 `tools\eNSP_Cloud_Plugin.dll`（32 位）实现，直接用 `packet.dll` 的底层接口。网卡枚举函数
+（RVA `0x11480`）是 WinPcap 官方示例的老写法。`eNSP_Client.exe` 里有逐字节相同的一份（`004D6180` 起），
+两个模块都要改。
+
+### 1. 版本号
 
 ```
 1001151E  call PacketGetVersion
 1001152B  movsx esi, byte ptr [eax]     ; esi = version[0]
-1001152E  sub   esi, '0'                ; 主版本号
-10011531  mov   [esp+1Ch], esi          ; 存起来，后面还要传给 100113E0
-10011535  call  GetVersion
-1001153B  ...Win9x 判断...
+1001152E  sub   esi, '0'                ; 主版本号，存到 [esp+1Ch]
+...
 1001154A  cmp   esi, 4
-1001154D  je    100115FA                ; 主版本 == 4 -> 按 ANSI 解析
-10011553  ...否则按 WCHAR(UTF-16) 解析   ; WinPcap 3.x 在 NT 上返回宽字符列表
+1001154D  je    100115FA                ; == 4 -> 按 ANSI 解析列表；否则按 UTF-16（WinPcap 3.x）
+...
+100113FC  cmp   dword ptr [esp+1Ch], 4  ; 逐个网卡检查里再判一次：
+10011401  jne   10011439                ;   == 4 按 64 位读 NetType.LinkSpeed，否则按 32 位
 ```
 
-主版本号还会作为参数传给逐个网卡检查的 `100113E0`，那里有**第二个分支**：
+Npcap 报 `"1.89"`，主版本被算成 1，两处都走了 WinPcap 3.x 的路径。
 
-```
-100113FC  cmp  dword ptr [esp+1Ch], 4
-10011401  jne  10011439
-          ; == 4: NetType.LinkSpeed 按 64 位读（偏移 8），WinPcap 4 / Npcap 的结构
-          ; != 4: LinkSpeed 按 32 位读（偏移 4），WinPcap 3.x 的结构
-          ; 两边都要求 LinkSpeed >= 10 Mbps，否则丢弃该网卡
-```
+### 2. 链路速率过滤
 
-[`tools/dev/pcapprobe`](../../tools/dev/pcapprobe/run.bat) 实测两边的返回值：
+逐个网卡检查（`100113E0`）要求 `PacketOpenAdapter` 成功、`LinkType == 0`（以太网）、
+`LinkSpeed >= 10 Mbps`。逐个网卡重放这一流程（2026-10-11，本机）：
 
 | | WinPcap 4.1.3 | Npcap 1.89 |
 |---|---|---|
-| `PacketGetVersion()` | `"4.1.0.2980"` | **`"1.89"`** |
-| `PacketGetAdapterNames` 格式 | ANSI，`名字…\0\0描述…\0\0` | 同样是 ANSI |
-| 第一项 | `\Device\NPF_{GUID}` | `\Device\NPF_Loopback`（无 GUID） |
+| `PacketGetVersion()` | `"4.1.0.2980"` | `"1.89"` |
+| `PacketGetNetType` 的 `LinkSpeed` | 真实值（1 Gbps、100 Mbps、Wi-Fi Direct 1.5 Mbps…） | **全部为 0** |
+| `\Device\NPF_Loopback` | 无此项 | `LinkType = 0xFFFFFFFF`，被类型检查挡掉 |
 
-主版本被算成 `1`，插件以为是老 WinPcap：把 ANSI 列表当 UTF-16 解析，得到的全是乱码；
-就算解析对了，`LinkSpeed` 也会从结构体的填充字节里读，网卡照样被丢弃。于是只剩 UDP。
-抓包走的是另一条路径，所以不受影响。
+所以只修版本号还不够：每块网卡仍因速率为 0 被丢弃。插件里另一条打开网卡的路径（`1000DEEC`，
+不看版本号）有同样的速率检查。
 
-插件里另一处枚举（`1000DEEC`）不看版本号，始终按 ANSI + 64 位 `LinkSpeed` 处理。
+### 其它模块
 
-### 其它模块里的同一段代码
-
-所有导入 `PacketGetVersion` 的模块都查过（dumpbin 反汇编）：
-
-| 模块 | 版本号用法 |
-|---|---|
-| `eNSP_Client.exe` | **与 Cloud 插件逐字节相同的两处分支**（`004D6225` 起）。Cloud 配置界面的网卡列表很可能来自这里，必须一起补 |
-| `vboxserver\devices\AR\AR\eNSP_Router.exe` | 主版本存进全局变量，两处 `cmp …, 4` |
-| `vboxserver\devices\LSW\s3700\eNSP_Switch.exe`、`s5700\eNSP_Switch.exe` | 同上 |
-| `vboxserver\devices\FW\USG5500\eNSP_Firewall.exe` | 直接比 `version[0] == '4'` |
-
-设备进程里的分支目前没有对应到任何可见症状（Npcap 下交换机等照常工作）。
+所有导入 `PacketGetVersion` 的模块都查过：`eNSP_Router.exe`、两个 `eNSP_Switch.exe`、
+`eNSP_Firewall.exe` 也有版本分支，但没有对应到任何可见症状（Npcap 下交换机等照常工作）。
 
 ## 修复：`patches/patch_pcap_version.py`
 
-不去逐个改分支，而是**在算主版本号的那一处直接写死 4**：
+| 模块 | 位置 | 改动 |
+|---|---|---|
+| Cloud 插件 | `1001152B`（文件 `0x1152B`） | `movsx esi,[eax]; sub esi,'0'` → `mov esi,4; nop` |
+| Cloud 插件 | `1001141E`（`0x1141E`），列表 | 速率检查改为只丢弃 `0 < LinkSpeed < 10 Mbps` |
+| Cloud 插件 | `1000DF3F`（`0xDF3F`），打开网卡 | 同上 |
+| eNSP_Client | `004D6225`（`0xD6225`） | 同 Cloud 的版本号 |
+| eNSP_Client | `004D611E`（`0xD611E`） | 同 Cloud 的速率检查 |
+| 设备进程（`--devices`） | 各一处 | 只改版本号 |
 
-| 模块 | 文件偏移 | 原字节 | 补丁后 |
+速率检查原来是 17 字节的 `cmp [esp+X+4],0; ja pass; cmp [esp+X],989680h; jb drop`，换成等长的
+`nop×5; mov eax,[esp+X]; dec eax; cmp eax,98967Fh; jb drop`：速率 0 时 `dec` 得到 `0xFFFFFFFF`，
+不小于阈值，放行；1 bps 到 10 Mbps 之间仍丢弃。跳转目标不变，`eax` 在两条出口上都会被重新赋值。
+
+- WinPcap 4.x 下主版本本来就是 4、速率从不为 0，**行为不变**（枚举结果补丁前后逐项相同）。
+- Npcap 下 Cloud 会多列出几项 WinPcap 下被速率挡掉的网卡（WAN Miniport、蓝牙 PAN、Wi-Fi Direct），无害。
+- 补丁器的判断方法：把各补丁点恢复为出厂字节后，整个文件的哈希必须等于出厂哈希。所以出厂、全补、
+  部分补（例如只打过旧版的版本号补丁）三种状态都能识别，其它文件一律拒绝。默认留 `.bak`，可 `--restore`。
+
+## 验证
+
+`tools\dev\pcapprobe\cloud.bat` 在 eNSP 之外直接调用插件自己的枚举函数，分别用系统的 packet.dll
+和 Npcap 的 packet.dll 各跑一次（只用插件副本，不动 Program Files）。2026-10-11 本机结果：
+
+| | 出厂插件 | 只修版本号 | 版本号 + 速率 |
 |---|---|---|---|
-| Cloud 插件 | `0x1152B` | `0F BE 30 83 EE 30`（movsx esi,[eax]; sub esi,'0'） | `BE 04 00 00 00 90`（mov esi,4; nop） |
-| eNSP_Client | `0xD6225` | 同上 | 同上 |
-| Router / S3700 / S5700 | `0x7665A3` / `0x2D42BE3` / `0x310D033` | `0F BE 02 83 E8 30` | `B8 04 00 00 00 90`（mov eax,4; nop） |
-| Firewall | `0x1B2DC7` | `74 02`（je） | `EB 02`（jmp） |
+| WinPcap | 6 块 | 6 块（相同） | 6 块（相同） |
+| Npcap | 0 块 | **0 块** | **12 块**（含 Realtek、Intel Wi-Fi、Host-Only、VMnet1/8） |
 
-- 一处补丁覆盖该模块里所有用到版本号的分支。WinPcap 4.x 下主版本本来就是 4，**行为不变**。
-- 原指令里没有绝对地址，所以不涉及重定位。
-- 默认只补 Cloud 插件和 eNSP_Client；`--devices` 才连设备进程一起补。
-- 和 `patch_var_plugin.py` 一样：校验出厂与补丁后的整文件 SHA-256，写前逐字节核对，默认留 `.bak`，可 `--restore`。
-- 已在 6 个文件的副本上验证 patch → check → restore 往返，还原后与原文件逐字节一致；补丁点用 dumpbin 反汇编复核。
+eNSP 内验证不用卸载 WinPcap：`packet.dll` 不是 KnownDLL，程序目录比 System32 先被搜索。把
+`C:\Windows\SysWOW64\Npcap\Packet.dll` 复制到 eNSP 根目录，eNSP 就改用 Npcap；删掉即还原
+（复制要在**管理员**命令提示符里做，否则会静默失败）。2026-10-11：只修版本号时仍只有 UDP，
+补上速率后 Cloud 能列出本机网卡，抓包正常。
 
-## 真机验证（不用卸载 WinPcap）
+## 切到 Npcap 的做法
 
-`packet.dll` 不是 KnownDLL，程序目录比 System32 先被搜索。把 Npcap 的 32 位
-`C:\Windows\SysWOW64\Npcap\Packet.dll` 复制到 eNSP 根目录（`eNSP_Client.exe` 旁边），
-eNSP 就改用 Npcap，系统里的 WinPcap 原样不动；删掉这份副本即还原。用 pcapprobe 验证过这个办法：
-同目录放 Npcap 的 `Packet.dll` 后 `PacketGetVersion()` 返回 `"1.89"`，13 块网卡都列得出来。
-
-1. 关闭 eNSP，复制 Npcap 的 `Packet.dll` 到 eNSP 根目录 → 打开 Cloud 配置，应复现"只剩 UDP"。
-2. 关闭 eNSP，管理员运行 `python patches\patch_pcap_version.py` → 再打开 Cloud 配置，应能看到本机网卡。
-3. 把 Cloud 桥接到本机网卡（或 host-only），与设备双向 ping、抓包对照。
-4. 验证完：删除 eNSP 根目录里那份 `Packet.dll`。补丁可留（WinPcap 下无影响），也可 `--restore`。
-
-还要观察：`\Device\NPF_Loopback` 这一项（没有 GUID）会不会出现在列表里、选中后是否无害。
+1. 管理员运行 `python patches\patch_pcap_version.py`（关闭 eNSP 后）。
+2. 卸载 WinPcap，Npcap 勾选 "WinPcap API-compatible Mode"；或保留 WinPcap，只按上面的方法给 eNSP 单独放一份 Npcap 的 `Packet.dll`。

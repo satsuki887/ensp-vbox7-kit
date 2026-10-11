@@ -82,7 +82,8 @@ eNSP 只认 VirtualBox 5.2，而 5.2 在新版 Windows 上装不上、不稳定�
   （原因见 [`svrp-shutdown-crash.md`](docs/findings/svrp-shutdown-crash.md)）。在它们完全退出前**重新启动同一种设备**，
   插件会卡在 `###`。所以换拓扑时按这个顺序：**关闭 eNSP → 运行 `installer\清理残留.bat` → 重新打开 eNSP**。
 - **内存**：CE / NE 每台约占 4 GB。16 GB 内存的机器如果还开着 VMware，这类大设备尽量只开一两台。
-- **抓包驱动**：保留 WinPcap 4.1.3；安装 Npcap 时**不要**勾选 “WinPcap API-compatible Mode”，否则 Cloud 设备只剩 UDP
+- **抓包驱动**：保留 WinPcap 4.1.3；安装 Npcap 时**不要**勾选 “WinPcap API-compatible Mode”，否则 Cloud 设备只剩 UDP。
+  想只用 Npcap，先以管理员运行 `python patches\patch_pcap_version.py`（见 [`cloud-npcap.md`](docs/findings/cloud-npcap.md)）
   （见 [`cloud-npcap.md`](docs/findings/cloud-npcap.md)）。
 - **升级或重装 VirtualBox 之后**：它会在所有网卡上重新启用 “VirtualBox NDIS6 Bridged Networking Driver”。
   eNSP 用不到物理网卡上的这一项，可以在无线网卡上关掉；**host-only 网卡上的那一项必须保留**。
@@ -107,7 +108,7 @@ eNSP 只认 VirtualBox 5.2，而 5.2 在新版 Windows 上装不上、不稳定�
 | 问题 | 状态 | 记录 |
 |---|---|---|
 | IVirtualBox 方法区槽位整体少算 12（影响 `VAR_Plugin` 补丁、代理方法区、IMachine 映射） | 已确认；AR 实际可用 | [`vtable-reserved-slots.md`](docs/findings/vtable-reserved-slots.md) |
-| Cloud 设备不支持 Npcap 兼容模式 | 根因已定位；补丁器 `patches/patch_pcap_version.py` 待真机验证 | [`cloud-npcap.md`](docs/findings/cloud-npcap.md) |
+| Cloud 设备不支持 Npcap 兼容模式 | **已修复**：补丁器 `patches/patch_pcap_version.py`（版本号 + 速率过滤，已在 eNSP 内验证；不在安装器内） | [`cloud-npcap.md`](docs/findings/cloud-npcap.md) |
 | CE / NE 关机卡 60 秒后 `VBoxDD.DLL` 崩溃；旧实例未退出时重开导致插件卡死 | **已修复**：根因为 VirtualBox virtio-net 对未连接网卡的 bug，安装器第 7 步规避（CE / NE 已在 eNSP 内回归） | [`svrp-shutdown-crash.md`](docs/findings/svrp-shutdown-crash.md) |
 | VirtualBox 5.2.44 导致 0xD1 蓝屏 | **已解决**（本项目的起点） | [`bsod-vbox52.md`](docs/findings/bsod-vbox52.md) |
 
@@ -122,6 +123,7 @@ build\build.bat selftest              :: 带测试导出的版本，只供测试
 tools\dev\hooktest\run.bat            :: CreateProcessW hook 并发 + 兼容层矩阵测试
 tools\dev\vboxprobe\run.bat           :: 读出已安装 VirtualBox 的真实虚表布局（每次升级 VirtualBox 后先跑）
 tools\dev\pcapprobe\run.bat           :: 像 Cloud 插件一样调用 packet.dll，对比 WinPcap / Npcap
+tools\dev\pcapprobe\cloud.bat         :: 直接调用 Cloud 插件的网卡枚举，看 WinPcap / Npcap 下各列出哪些网卡
 powershell -File tools\dev\installer-tests\test_deploy.ps1   :: 安装器升级 / 卸载逻辑沙箱测试
 ```
 
