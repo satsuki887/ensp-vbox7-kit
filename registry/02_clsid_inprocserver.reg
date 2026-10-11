@@ -2,29 +2,23 @@ Windows Registry Editor Version 5.00
 
 ; ===========================================================================
 ;  02_clsid_inprocserver.reg
-;  Hijack the COM in-process server for the VirtualBox object so eNSP loads
-;  our shim instead of VirtualBox's own 32-bit proxy/stub.
+;  Point the 32-bit COM in-process server for the VirtualBox object at our
+;  shim, so eNSP (a 32-bit process) loads VBox52.dll when it creates it.
 ;
 ;  CLSID {B1A7A4F2-47B9-4A1E-82B2-07CCD5323C3F} = CLSID_VirtualBox (the main
-;  IVirtualBox object). In a stock VBox 7.2 install the 32-bit InprocServer32
-;  points at  ...\Oracle\VirtualBox\x86\VBoxProxyStub-x86.dll  which marshals
-;  to the 64-bit out-of-process VBoxSVC.exe. We repoint it at VBox52.dll, which
-;  exports DllGetClassObject and hands eNSP a 5.2-shaped interface bridged onto
-;  the real 7.2 server.
+;  IVirtualBox object). VBox52.dll exports DllGetClassObject and hands eNSP a
+;  5.2-shaped interface bridged onto the real 7.2 VBoxSVC.
 ;
-;  Both registry views are set: eNSP (32-bit) uses WOW6432Node; the 64-bit view
-;  is set to match. ThreadingModel "Both" mirrors the original registration.
-;  LocalServer32 (-> VBoxSVC.exe) is intentionally left in place.
+;  32-bit view (WOW6432Node) ONLY. A stock VirtualBox 7.2.16 has no such key in
+;  the 32-bit view at all, and in the 64-bit view only LocalServer32
+;  (-> VBoxSVC.exe). Do not add an InprocServer32 to the 64-bit view: it points
+;  64-bit clients at a 32-bit DLL and they fail with 0x800700C1 (measured).
+;  This is what installer\install.ps1 writes as well.
 ;
 ;  Edit the path below if eNSP is not installed under C:\Program Files\Huawei.
+;  To undo: reg delete "HKLM\SOFTWARE\Classes\WOW6432Node\CLSID\{B1A7A4F2-47B9-4A1E-82B2-07CCD5323C3F}" /f
 ; ===========================================================================
 
-; --- 64-bit view ---
-[HKEY_LOCAL_MACHINE\SOFTWARE\Classes\CLSID\{B1A7A4F2-47B9-4A1E-82B2-07CCD5323C3F}\InprocServer32]
-@="C:\\Program Files\\Huawei\\eNSP\\tools\\VBox52.dll"
-"ThreadingModel"="Both"
-
-; --- 32-bit view (WOW6432Node) -- the one eNSP actually binds ---
 [HKEY_LOCAL_MACHINE\SOFTWARE\Classes\WOW6432Node\CLSID\{B1A7A4F2-47B9-4A1E-82B2-07CCD5323C3F}\InprocServer32]
 @="C:\\Program Files\\Huawei\\eNSP\\tools\\VBox52.dll"
 "ThreadingModel"="Both"
