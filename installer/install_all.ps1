@@ -421,7 +421,7 @@ function Invoke-PreInstallCheck {
 
     # 这一步里防火墙要枚举全部规则,非提权下约 7 秒(本机 1274 条实测)。先说一声,
     # 免得用户以为卡死了。
-    Write-Info "正在采集(其中防火墙规则枚举约需数秒)⋯"
+    Write-Info "正在采集(其中防火墙规则枚举约需数秒)…"
     $facts = Get-PreInstallFacts -EnspDir $EnspDir -VBoxDir $VBoxDir
     $found = @(Get-PreInstallFindings -EnspDir $facts.EnspDir -VBoxDir $facts.VBoxDir `
                                       -VBoxMajor $facts.VBoxMajor `
@@ -501,19 +501,19 @@ if (-not (Test-Path $registerPs1)) { Write-Err "整合包损坏:缺 register_vms
 $varpPayload = Join-Path $ScriptDir "payload\VAR_Plugin.dll"
 $preparePs1  = Join-Path (Split-Path -Parent $ScriptDir) "tools\prepare-payload.ps1"
 if (-not (Test-Path $varpPayload)) {
-    Write-Host "  [..] 安装包里还没有 VAR_Plugin.dll,从本机 eNSP 生成(tools\prepare-payload.ps1)⋯" -ForegroundColor Gray
-    if (-not (Test-Path $preparePs1)) { Write-Err "缺 tools\prepare-payload.ps1,无法生成 VAR_Plugin.dll"; exit 1 }
+    Write-Host "  [..] 安装包里还没有 VAR_Plugin.dll,先从本机 eNSP 生成(tools\prepare-payload.ps1,无需管理员)…" -ForegroundColor Gray
+    if (-not (Test-Path $preparePs1)) { Write-Err "缺 tools\prepare-payload.ps1,无法生成 VAR_Plugin.dll。请重新下载完整的仓库。"; exit 1 }
     $prepArgs = @("-NoProfile","-ExecutionPolicy","Bypass","-File",$preparePs1)
     if ($EnspDir) { $prepArgs += @("-EnspDir",$EnspDir) }
     & powershell.exe @prepArgs
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $varpPayload)) {
-        Write-Err "生成 VAR_Plugin.dll 失败(见上方输出),未做任何改动。"
+        Write-Err "生成 VAR_Plugin.dll 失败(原因见上方输出),本次安装未做任何改动。"
         exit 1
     }
 }
 
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "  ensp-vbox-shim  一键安装(打补丁 + 注册设备 + 环境检测)" -ForegroundColor Cyan
+Write-Host "  一键安装:安装前检查 -> 部署垫片 -> 注册基础设备 -> 环境检测" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 
 # --- -Check:只读检测,不提权,两段都不跑 ---
@@ -545,7 +545,7 @@ $repairPlan = @($pre.Plan)
 
 # --- 段 1:提权跑 install.ps1 ---
 # Start-Process -ArgumentList 用单一字符串,含空格路径必须自己加引号。
-Write-Step "第 1 步 / 共 3 步:打补丁(需要管理员权限,UAC 会弹一次)"
+Write-Step "第 1 步 / 共 3 步:部署垫片与补丁(需要管理员权限,会弹一次 UAC)"
 $installArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$installPs1`""
 if ($EnspDir) { $installArgs += " -EnspDir `"$EnspDir`"" }
 if ($VBoxDir) { $installArgs += " -VBoxDir `"$VBoxDir`"" }
@@ -680,14 +680,14 @@ if ($agreed.Count -eq 0) {
             # 非 0 有两种:某一项修复失败,或计划里的 id 在提权侧对不上(环境在这两步
             # 之间变了)。两种都不该当作已修好,所以都指到同一份记录。
             Write-Warn "修复步骤未全部成功(退出码 $($fixProc.ExitCode))。"
-            Write-Info "逐条结果见上方输出与 修复过程记录 那两行;"
+            Write-Info "逐条结果见上方输出;完整过程见上面提示的「修复过程记录」文件。"
             Write-Info "也可以双击 环境检查.bat 重新采一份报告看现状。"
         }
     }
 }
 
 Write-Host "`n============================================================" -ForegroundColor Green
-Write-Host "  全部完成。启动 eNSP,拉一台设备试试。" -ForegroundColor Green
+Write-Host "  全部完成。启动 eNSP,先单独启动一台 AR 试试。" -ForegroundColor Green
 Write-Host "  要还原:双击 卸载.bat。" -ForegroundColor Green
-Write-Host "  环境报告在 $logDir 下,报障时可直接附进 issue。" -ForegroundColor Green
+Write-Host "  环境报告保存在 $logDir 下,报障时可直接附在 issue 里。" -ForegroundColor Green
 Write-Host "============================================================`n" -ForegroundColor Green

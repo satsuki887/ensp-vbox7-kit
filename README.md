@@ -1,105 +1,139 @@
 # ensp-vbox7-kit
 
-让原版 **华为 eNSP** 稳定运行在 **VirtualBox 7.2** 上的一整套工具：COM 垫片、安装器、诊断与测试工具，
-以及排障记录。
+让原版**华为 eNSP** 稳定运行在 **VirtualBox 7.2** 上：COM 垫片、一键安装器、环境诊断与修复工具，以及一组排障记录。
 
-> **本项目基于 [LBXaaa/ensp-vbox-shim](https://github.com/LBXaaa/ensp-vbox-shim) 二次开发**，
-> 核心设计与绝大部分逆向成果出自原作者 **LBXaaa**，本仓库完整保留了原项目的提交历史。
+> **本项目基于 [LBXaaa/ensp-vbox-shim](https://github.com/LBXaaa/ensp-vbox-shim) 二次开发。**
+> 核心设计和绝大部分逆向成果出自原作者 **LBXaaa**，原项目的提交历史完整保留在本仓库中。
 > 详见下文[致谢](#致谢)与 [`NOTICE.md`](NOTICE.md)。
 >
 > 本项目免费开源。若是付费获得，则为他人倒卖。
 
-## 和原项目的关系
+![eNSP 在 VirtualBox 7.2 上运行](docs/images/ensp-running-on-vbox72.png)
 
-原项目解决了"eNSP 只认 VirtualBox 5.2，而 5.2 在新系统上装不上或不稳定"的问题：对 eNSP 伪装成 5.2，
-把调用翻译给真正的 7.2（原理见 [`docs/architecture.md`](docs/architecture.md)、原 README 存档
-[`docs/upstream/README.md`](docs/upstream/README.md)）。
+<sub>截图来自原作者：VirtualBox 7.2.8 与 Hyper-V 共存，eNSP 交换机互 ping 正常。</sub>
 
-本仓库在此基础上：
+## 它解决什么问题
 
-- **修复**了垫片和安装器中几处会导致崩溃或漏改参数的问题（多台设备同时启动、Windows 兼容模式、日志溢出、
-  64 位 COM 注册、升级安装）；
-- **不再分发**华为的 `VAR_Plugin.dll`，改为从你自己的 eNSP 现场生成；
+eNSP 只认 VirtualBox 5.2，而 5.2 在新版 Windows 上装不上、不稳定，甚至会蓝屏。原项目的做法是：对 eNSP
+伪装成 5.2，再把它的调用翻译给真正的 VirtualBox 7.2（原理见 [`docs/architecture.md`](docs/architecture.md)，
+原 README 存档于 [`docs/upstream/README.md`](docs/upstream/README.md)）。
+
+本仓库在原项目基础上：
+
+- **修复**了垫片和安装器里几处会导致崩溃或漏改参数的问题：多台设备同时启动、Windows 兼容模式、日志溢出、
+  64 位 COM 注册、升级安装；
+- **不再分发**华为的 `VAR_Plugin.dll`，改为在安装时从你本机的 eNSP 生成；
 - 加入**可复现编译**和一组**测试 / 探针工具**；
-- 记录了几处新定位但尚未修复的问题，作为后续工作的起点。
+- 记录了几处已定位、尚未修复的问题，作为后续工作的起点。
 
-完整列表见 [`CHANGELOG.md`](CHANGELOG.md)。上游有更新时可以合并：
-
-```bat
-git fetch upstream
-git merge upstream/main
-```
+完整改动见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 已验证的环境
 
 | 项目 | 版本 |
 |---|---|
-| Windows | 11 家庭版 build 26300（eNSP 设为"Windows 7 兼容 + 以管理员身份运行"） |
+| Windows | 11 家庭版 build 26300（eNSP 设为“Windows 7 兼容 + 以管理员身份运行”） |
 | CPU | Intel i9-13900HX（未开 Hyper-V / VBS） |
 | eNSP | V100R003C00SPC100（1.3.00.100） |
 | VirtualBox | 7.2.16 r174877 |
 | 抓包驱动 | WinPcap 4.1.3 + Npcap 1.89（**非**兼容模式） |
 | 已测设备 | AR2220、S5700、USG6000V、AC、CE6800、NE40E、NE9000；5 台同时启动；Cloud、接口抓包 |
 
-开着 WSL2 / Hyper-V 的机器，原项目作者也测过，VirtualBox 会走 Hyper-V 后端，设备启动明显变慢。
+开启 WSL2 / Hyper-V 的机器也能用（原作者测过），但 VirtualBox 会改走 Hyper-V 后端，设备启动明显变慢。
 
 ## 安装
 
-准备：关闭 eNSP 和 VirtualBox，备份拓扑文件（`.topo`），装好 Python 3。各安装包的官方来源与校验值见
-[`docs/dependencies.md`](docs/dependencies.md)。
+**准备**
 
-1. 卸载旧版 VirtualBox（如 5.2.44），**重启**。
-2. 安装 VirtualBox 7.2.16（选项默认）。
-3. 双击 `installer\安装.bat`，UAC 点"是"：
-   - 安装包里没有 `VAR_Plugin.dll` 时，会先用 `tools\prepare-payload.ps1` 从本机 eNSP 生成（无需管理员）；
-   - 安装前检查是只读的；会影响网络的修复项会先征得你同意；
-   - 原文件全部备份为 `.orig.bak`。
+- 关闭 eNSP 和 VirtualBox，备份拓扑文件（`.topo`）。
+- 安装 [Python 3](https://www.python.org/downloads/windows/)（勾选 “Add python.exe to PATH”）。首次安装时要用它从
+  本机 eNSP 生成 `VAR_Plugin.dll`。
+- 各安装包的官方下载地址与校验值见 [`docs/dependencies.md`](docs/dependencies.md)。
+
+**步骤**
+
+1. 卸载旧版 VirtualBox（如 5.2.44），然后**重启**。
+2. 安装 VirtualBox 7.2.16，选项保持默认。
+3. 下载本仓库（`git clone` 或 GitHub 上的 “Download ZIP”），用**平时启动 eNSP 的账户**双击
+   `installer\安装.bat`。安装器会依次：
+   - 做一遍安装前检查（只读）。会影响网络的修复项，执行前会先征得你同意；
+   - 部署垫片和补丁（此时弹一次 UAC，点“是”）。被替换的原文件都备份为 `.orig.bak`；
+   - 注册 eNSP 的基础设备 VM；
+   - 运行一次环境检测，并把报告保存到 `C:\ProgramData\ensp-vbox-shim\`。
 4. 启动 eNSP，先单独启动一台 AR 试试。
 
-升级到新版本：拉取后重新运行 `安装.bat` 即可，会自动替换旧版垫片。
+**升级**：拉取新版本后重新运行 `安装.bat`，旧版垫片会被自动替换。
+
+## installer\ 下的工具
+
+| 脚本 | 什么时候用 |
+|---|---|
+| `安装.bat` | 首次安装、升级 |
+| `环境检查.bat` | 设备起不来时先跑它。生成一份只读报告，第 [9] 节列出问题和修复命令；加 `-Fix` 执行修复 |
+| `清理残留.bat` | 关闭设备或 eNSP 后，`VBoxHeadless.exe` 迟迟不退出、占着内存 |
+| `注册设备.bat` | 只在安装时提示“已跳过自动注册”时使用 |
+| `卸载.bat` | 还原 eNSP 和 VirtualBox 的改动 |
+
+每个脚本的细节、排错方法以及需要导入设备包的设备（USG6000V、CE、NE 等）见 [`installer/README.md`](installer/README.md)。
 
 ## 日常使用须知
 
-- **CE / CX / NE 系列关闭需要约 3 分钟**，关闭后还可能弹出 `VBoxHeadless.exe` 应用程序错误，点"确定"即可
-  （原因见 [`svrp-shutdown-crash.md`](docs/findings/svrp-shutdown-crash.md)）。在它们退出前**重开同一种设备**
-  会让插件卡在 `###`。换拓扑时按这个顺序：**关闭 eNSP → `installer\清理残留.bat` → 重开 eNSP**。
-- **内存**：CE / NE 每台约 4 GB。16 GB 内存的机器同时开着 VMware 时，大设备尽量只开一两台。
-- **抓包驱动**：保留 WinPcap 4.1.3，Npcap **不要**勾选 "WinPcap API-compatible Mode"，否则 Cloud 设备只剩 UDP
-  （[`cloud-npcap.md`](docs/findings/cloud-npcap.md)）。
-- **升级或重装 VirtualBox 之后**：它会在所有网卡上重新启用 "VirtualBox NDIS6 Bridged Networking Driver"。
-  eNSP 不需要物理网卡上的这一项，可以在无线网卡上关掉；**host-only 网卡上的那项必须保留**。
+- **CE / CX / NE 系列关闭需要约 3 分钟**，关闭后还可能弹出 `VBoxHeadless.exe` 应用程序错误，点“确定”即可
+  （原因见 [`svrp-shutdown-crash.md`](docs/findings/svrp-shutdown-crash.md)）。在它们完全退出前**重新启动同一种设备**，
+  插件会卡在 `###`。所以换拓扑时按这个顺序：**关闭 eNSP → 运行 `installer\清理残留.bat` → 重新打开 eNSP**。
+- **内存**：CE / NE 每台约占 4 GB。16 GB 内存的机器如果还开着 VMware，这类大设备尽量只开一两台。
+- **抓包驱动**：保留 WinPcap 4.1.3；安装 Npcap 时**不要**勾选 “WinPcap API-compatible Mode”，否则 Cloud 设备只剩 UDP
+  （见 [`cloud-npcap.md`](docs/findings/cloud-npcap.md)）。
+- **升级或重装 VirtualBox 之后**：它会在所有网卡上重新启用 “VirtualBox NDIS6 Bridged Networking Driver”。
+  eNSP 用不到物理网卡上的这一项，可以在无线网卡上关掉；**host-only 网卡上的那一项必须保留**。
 
 ## 卸载与回滚
 
-- `installer\卸载.bat`：还原版本号、`VAR_Plugin.dll` 和各处 `VBox52.dll`，删除安装器新建的文件。
-- **COM 注册表项不会自动还原**。原版 7.2.16 的 `CLSID_VirtualBox` 在 32 位视图里根本没有这个键，
-  所以"修复 VirtualBox"并不能删掉它；请对照安装前导出的注册表手工处理（建议安装前先用
-  `reg export` 备份 `HKLM\SOFTWARE\Classes\WOW6432Node\CLSID\{B1A7A4F2-47B9-4A1E-82B2-07CCD5323C3F}`）。
-- **退回 VirtualBox 5.2**：7.2 会把 eNSP 基础虚拟机的 `.vbox` 配置升级成新格式，5.2 读不了。
-  回滚前要还原安装前备份的 `eNSP\vboxserver\**\*.vbox` 和 `%USERPROFILE%\.VirtualBox\VirtualBox.xml`。
+- 运行 `installer\卸载.bat`：还原 VirtualBox 版本号、`VAR_Plugin.dll`、x86 运行时和各处的 `VBox52.dll`，
+  删除安装器新建的文件。
+- **COM 注册表项需要手动处理**。原版 7.2.16 的 32 位注册表视图里根本没有 `CLSID_VirtualBox` 这个键，
+  所以“修复 VirtualBox”也删不掉它。确认不再需要垫片后，在管理员命令提示符中执行：
+
+  ```bat
+  reg delete "HKLM\SOFTWARE\Classes\WOW6432Node\CLSID\{B1A7A4F2-47B9-4A1E-82B2-07CCD5323C3F}" /f
+  ```
+
+  稳妥起见，可以在安装前先用 `reg export` 备份这个键。
+- **退回 VirtualBox 5.2**：7.2 会把 eNSP 基础虚拟机的 `.vbox` 配置升级成新格式，5.2 读不了。回滚前要还原安装前
+  备份的 `eNSP\vboxserver\**\*.vbox` 和 `%USERPROFILE%\.VirtualBox\VirtualBox.xml`。
 
 ## 已知问题与后续计划
 
 | 问题 | 状态 | 记录 |
 |---|---|---|
-| IVirtualBox 方法区槽位整体少算 12（影响 `VAR_Plugin` 补丁、代理方法区、IMachine 映射） | 已确认，AR 实际可用 | [`vtable-reserved-slots.md`](docs/findings/vtable-reserved-slots.md) |
-| Cloud 设备不支持 Npcap 兼容模式 | 根因已定位，有 2 字节补丁方案待验证 | [`cloud-npcap.md`](docs/findings/cloud-npcap.md) |
-| CE / NE 关机时 `VBoxDD.DLL` NAT 线程崩溃；旧实例未退时重开导致插件卡死 | 可稳定复现，原因已定位 | [`svrp-shutdown-crash.md`](docs/findings/svrp-shutdown-crash.md) |
+| IVirtualBox 方法区槽位整体少算 12（影响 `VAR_Plugin` 补丁、代理方法区、IMachine 映射） | 已确认；AR 实际可用 | [`vtable-reserved-slots.md`](docs/findings/vtable-reserved-slots.md) |
+| Cloud 设备不支持 Npcap 兼容模式 | 根因已定位，2 字节补丁方案待验证 | [`cloud-npcap.md`](docs/findings/cloud-npcap.md) |
+| CE / NE 关机时 `VBoxDD.DLL` 中 NAT 线程崩溃；旧实例未退出时重开导致插件卡死 | 可稳定复现，原因已定位 | [`svrp-shutdown-crash.md`](docs/findings/svrp-shutdown-crash.md) |
 | VirtualBox 5.2.44 导致 0xD1 蓝屏 | **已解决**（本项目的起点） | [`bsod-vbox52.md`](docs/findings/bsod-vbox52.md) |
+
+遇到问题请先运行 `installer\环境检查.bat`，再把生成的报告附在
+[issue](https://github.com/satsuki887/ensp-vbox7-kit/issues) 里。
 
 ## 开发
 
 ```bat
-build\build.bat                       :: 编译 VBox52.dll（自动找 VS；无 SDK 时用 local\toolchain）
-build\build.bat selftest              :: 带测试导出的版本，只给测试用，切勿发布
+build\build.bat                       :: 编译 VBox52.dll（自动查找 VS；没装 SDK 时用 local\toolchain）
+build\build.bat selftest              :: 带测试导出的版本，只供测试，切勿发布
 tools\dev\hooktest\run.bat            :: CreateProcessW hook 并发 + 兼容层矩阵测试
 tools\dev\vboxprobe\run.bat           :: 读出已安装 VirtualBox 的真实虚表布局（每次升级 VirtualBox 后先跑）
 tools\dev\pcapprobe\run.bat           :: 像 Cloud 插件一样调用 packet.dll，对比 WinPcap / Npcap
 powershell -File tools\dev\installer-tests\test_deploy.ps1   :: 安装器升级 / 卸载逻辑沙箱测试
 ```
 
-修改源码后：编译 → 把 `build\VBox52.dll` 复制到 `installer\payload\` → 更新 `installer\install.ps1` 中的
-`DLL_SHA256`，并把旧哈希移入 `PREV_DLL_SHA256`。
+修改 `src/` 之后：编译 → 把 `build\VBox52.dll` 复制到 `installer\payload\` → 在 `installer\install.ps1` 中把旧的
+`DLL_SHA256` 移入 `PREV_DLL_SHA256`，再填入新哈希 → 跑 hooktest 和 test_deploy。
+
+上游有更新时合并：
+
+```bat
+git fetch upstream
+git merge upstream/main
+```
 
 `local/` 目录（git 忽略）存放安装包、备份、崩溃现场和编译用的 SDK 包，说明见 [`local/README.md`](local/README.md)。
 
@@ -107,9 +141,9 @@ powershell -File tools\dev\installer-tests\test_deploy.ps1   :: 安装器升级 
 
 ```
 src/                 垫片源码（C++ / MASM）
-build/               build.bat 与发布用的 VBox52.dll
+build/               build.bat 与发布用的 VBox52.dll；tests/ 是检测库的单元测试
 installer/           安装 / 卸载 / 注册设备 / 环境检查 / 清理残留
-  payload/           安装包内容（VAR_Plugin.dll 本地生成，不进 git）
+  payload/           安装器部署的文件（VAR_Plugin.dll 在本机生成，不进 git）
 patches/             VAR_Plugin / NGFW 插件补丁器
 registry/            参考用 .reg（安装器直接写注册表，不导入它们）
 tools/               prepare-payload.ps1；dev/ 下是测试与探针工具

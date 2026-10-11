@@ -41,7 +41,7 @@ link.exe /nologo /dll /Brepro /out:"%OUT%\VBox52.dll" /def:"%SRC%\vbox52.def" ^
 
 echo === Done: %~dp0%OUT%\VBox52.dll ===
 dumpbin /nologo /exports "%OUT%\VBox52.dll" | findstr /i "VBoxInstance SelfTest"
-certutil -hashfile "%OUT%\VBox52.dll" SHA256 | findstr /v ":"
+for /f "delims=" %%h in ('certutil -hashfile "%OUT%\VBox52.dll" SHA256 ^| findstr /v ":"') do echo SHA256: %%h
 popd & endlocal & exit /b 0
 
 :fail

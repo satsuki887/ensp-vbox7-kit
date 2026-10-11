@@ -1,30 +1,33 @@
 @echo off
 chcp 936 >nul
 cd /d "%~dp0"
-title eNSP 设备 VM 注册
+title ensp-vbox7-kit 注册设备
 
 rem ============================================================
-rem  注册 eNSP 基础设备 VM 到 VirtualBox 7.x
+rem  把 eNSP 的基础设备 VM 注册进 VirtualBox 7.x
 rem
-rem  本步不要提权:注册脚本须以普通权限跑,VM 注册写入当前用户的
-rem  .VirtualBox\VirtualBox.xml,必须与平时启动 eNSP 的
-rem  账户一致;用管理员跑可能把数据写进别的账户,eNSP
-rem  反而看不到。请用平时跑 eNSP 的那个账户直接双击本文件。
+rem  本脚本不提权：VM 注册写入当前用户的 .VirtualBox\VirtualBox.xml，
+rem  必须和平时启动 eNSP 的账户一致。以其他管理员账户运行会把注册写进
+rem  那个账户的配置，eNSP 反而看不到。请用平时启动 eNSP 的账户直接双击。
 rem ============================================================
 
 echo ============================================================
-echo   eNSP 设备 VM 注册
-echo   本工具开源于 https://github.com/LBXaaa/ensp-vbox-shim
-echo   若是付费获得,则为他人倒卖,请到上述地址免费下载
-echo   把 AR_Base / WLAN_*_Base 等注册进 VirtualBox 7.x
-echo ============================================================
+echo   ensp-vbox7-kit 注册设备
 echo.
-echo 已注册的会自动跳过,只补注册缺失的(幂等、可重复跑)。
+echo   项目地址  https://github.com/satsuki887/ensp-vbox7-kit
+echo   基于      https://github.com/LBXaaa/ensp-vbox-shim
+echo   本工具免费开源。若是付费获得，则为他人倒卖。
+echo ------------------------------------------------------------
+echo   用途：把 eNSP 的基础设备 VM（AR_Base、WLAN_*_Base 等）注册进 VirtualBox。
+echo         安装.bat 通常已自动完成这一步；只有安装时提示“已跳过自动注册”才需要运行本脚本。
+echo   注意：请用平时启动 eNSP 的账户直接双击，不要“以管理员身份运行”。
+echo   已正确注册的设备保持不动，可以放心重复运行。
+echo ============================================================
 echo.
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0register_vms.ps1"
 
 echo.
 echo ------------------------------------------------------------
-echo 注册流程结束,任意键关闭本窗口。
+echo 注册流程结束，按任意键关闭窗口。
 pause >nul

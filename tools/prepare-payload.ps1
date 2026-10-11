@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Generate installer\payload\VAR_Plugin.dll from YOUR OWN eNSP installation.
 
@@ -51,39 +51,57 @@ function Find-Ensp {
 }
 function Get-Sha([string]$p) { (Get-FileHash $p -Algorithm SHA256).Hash.ToLower() }
 
+function Say-OK([string]$m)   { Write-Host "  [OK] $m" -ForegroundColor Green }
+function Say-Info([string]$m) { Write-Host "  [..] $m" -ForegroundColor Gray }
+function Say-Err([string]$m)  { Write-Host "  [XX] $m" -ForegroundColor Red }
+
 if ((Test-Path $payload) -and ((Get-Sha $payload) -eq $PATCHED)) {
-    Write-Host "[OK] installer\payload\VAR_Plugin.dll is already the patched build. Nothing to do." -ForegroundColor Green
+    Say-OK "installer\payload\VAR_Plugin.dll 已是补丁版,无需重新生成。"
     exit 0
 }
 
 $ensp = Find-Ensp
-if (-not $ensp) { Write-Host "[XX] eNSP not found. Pass -EnspDir." -ForegroundColor Red; exit 1 }
+if (-not $ensp) {
+    Say-Err "找不到 eNSP 安装目录。请用 -EnspDir 指定,例如 -EnspDir `"D:\Huawei\eNSP`"。"
+    exit 1
+}
 $dir = Join-Path $ensp "plugin\ar1000v"
 $src = $null
 foreach ($cand in (Join-Path $dir "VAR_Plugin.dll.orig.bak"), (Join-Path $dir "VAR_Plugin.dll")) {
     if (Test-Path $cand) { $h = Get-Sha $cand; if ($h -eq $PRISTINE -or $h -eq $PATCHED) { $src = $cand; break } }
 }
 if (-not $src) {
-    Write-Host "[XX] No known VAR_Plugin.dll under $dir." -ForegroundColor Red
-    Write-Host "     The patcher only supports the 2019 factory build (sha256 $($PRISTINE.Substring(0,12))...)."
+    Say-Err "在 $dir 下没有找到可识别的 VAR_Plugin.dll。"
+    Say-Info "补丁器只支持 eNSP 1.3.00.100 自带的版本(SHA256 $($PRISTINE.Substring(0,12))…)。"
+    Say-Info "如果 eNSP 版本不同或插件被改过,请先重装 eNSP 1.3.00.100。"
     exit 1
 }
-Write-Host "eNSP   : $ensp"
-Write-Host "source : $src"
+Say-Info "eNSP 目录 : $ensp"
+Say-Info "来源文件  : $src"
 
 New-Item -ItemType Directory -Force (Split-Path $payload) | Out-Null
 Copy-Item $src $payload -Force
 if ((Get-Sha $payload) -eq $PRISTINE) {
     $py = (Get-Command py, python -ErrorAction SilentlyContinue | Select-Object -First 1).Source
-    if (-not $py) { Remove-Item $payload; Write-Host "[XX] Python 3 not found (need py or python on PATH)." -ForegroundColor Red; exit 1 }
+    if (-not $py) {
+        Remove-Item $payload
+        Say-Err "找不到 Python 3(PATH 里需要有 py 或 python)。"
+        Say-Info "从 https://www.python.org/downloads/windows/ 安装,勾选 Add python.exe to PATH 后重试。"
+        exit 1
+    }
+    Say-Info "正在用 patches\patch_var_plugin.py 打补丁…"
     $pyArgs = @("-I", $patcher, "--no-backup", $payload)
     if ((Split-Path $py -Leaf) -ieq "py.exe") { $pyArgs = @("-3") + $pyArgs }
     & $py @pyArgs
-    if ($LASTEXITCODE -ne 0) { Remove-Item $payload -ErrorAction SilentlyContinue; Write-Host "[XX] patcher failed." -ForegroundColor Red; exit 1 }
+    if ($LASTEXITCODE -ne 0) {
+        Remove-Item $payload -ErrorAction SilentlyContinue
+        Say-Err "补丁器运行失败(原因见上方输出),已删除半成品。"
+        exit 1
+    }
 }
 if ((Get-Sha $payload) -ne $PATCHED) {
     Remove-Item $payload -ErrorAction SilentlyContinue
-    Write-Host "[XX] Result does not match the expected patched build; removed it." -ForegroundColor Red
+    Say-Err "生成结果与预期的补丁版不一致,已删除。"
     exit 1
 }
-Write-Host "[OK] Wrote installer\payload\VAR_Plugin.dll (sha256 $($PATCHED.Substring(0,12))...)." -ForegroundColor Green
+Say-OK "已生成 installer\payload\VAR_Plugin.dll(SHA256 $($PATCHED.Substring(0,12))…)。"

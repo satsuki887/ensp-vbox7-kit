@@ -3,7 +3,7 @@
     ensp-vbox-shim 一键安装器 —— 让原版华为 eNSP 跑在 VirtualBox 7.x 上。
 
 .DESCRIPTION
-    自动检测 eNSP / VirtualBox 安装位置,用预构建的垫片 DLL 和已补丁的
+    自动检测 eNSP / VirtualBox 安装位置,用仓库里的垫片 DLL 和本机生成的已补丁
     插件 DLL 覆盖目标文件(备份原文件为 .orig.bak,可逆),写版本伪装与
     CLSID 注册表项。
 
@@ -11,7 +11,7 @@
       1. VBox52.dll        → 覆盖全部加载位置(tools/ vboxserver/ 根 ngfw/)
       2. 版本伪装           → 注册表 Oracle\VirtualBox Version=VersionExt=5.2.44
       3. CLSID InprocServer → 指向我们的 DLL(按真实路径生成)
-      4. VAR_Plugin.dll     → 覆盖 payload 中预构建的已补丁版本
+      4. VAR_Plugin.dll     → 覆盖为 payload 中的已补丁版本(tools\prepare-payload.ps1 本机生成)
       5. VC++ 运行时(x86) → 部署到 VBox\x86\ 子目录(干净机缺它会 error 40 / 0x800700C1)
     NGFW_Plugin.dll 不做处理:2026-09-10 的受控 A/B 实测显示,出厂原版与
     22 站点补丁版在启动结果上没有任何差异(失败签名相差不到 1 毫秒),
@@ -138,12 +138,18 @@ function Assert-Admin {
 # ---------------------------------------------------------------------------
 function Deploy-PayloadFile($PayloadName, $DestPath, $ExpectedHash) {
     $src = Join-Path $ScriptDir "payload\$PayloadName"
-    if (-not (Test-Path $src)) { Write-Err "整合包损坏:缺 payload\$PayloadName"; exit 1 }
+    if (-not (Test-Path $src)) {
+        Write-Err "缺少 payload\$PayloadName"
+        if ($PayloadName -eq "VAR_Plugin.dll") { Write-Info "它需要先从本机 eNSP 生成:通过 安装.bat 安装会自动生成,或手动运行 tools\prepare-payload.ps1。" }
+        else { Write-Info "安装包不完整,请重新下载完整的仓库。" }
+        exit 1
+    }
     $got = (Get-FileHash $src -Algorithm SHA256).Hash.ToLower()
     if ($got -ne $ExpectedHash.ToLower()) {
-        Write-Err "payload\$PayloadName 哈希不符,整合包可能被篡改。"
+        Write-Err "payload\$PayloadName 的 SHA256 与预期不符(文件损坏、被改动,或与本版本安装器不配套)。"
         Write-Info "期望 $ExpectedHash"
         Write-Info "实际 $got"
+        if ($PayloadName -eq "VAR_Plugin.dll") { Write-Info "删除 payload\VAR_Plugin.dll 后重新运行 安装.bat,会从本机 eNSP 重新生成。" }
         exit 1
     }
     $destDir = Split-Path $DestPath -Parent
@@ -484,7 +490,7 @@ function Do-Install {
         Write-OK "已移除 64 位视图里旧版安装器写入的 InprocServer32"
     }
 
-    Write-Step "4/6 部署 AR 路由器插件(预构建 VAR_Plugin.dll)"
+    Write-Step "4/6 部署已补丁的 AR 路由器插件 VAR_Plugin.dll"
     $varp = Join-Path $EnspDir "plugin\ar1000v\VAR_Plugin.dll"
     Deploy-PayloadFile "VAR_Plugin.dll" $varp $VARP_SHA256
 
@@ -515,7 +521,7 @@ function Do-Install {
     Grant-VBoxServerWrite -EnspDir $EnspDir -GrantSid $GrantSid
 
     Write-Host "`n============================================================" -ForegroundColor Green
-    Write-Host "  安装完成。启动 eNSP,拉起一台设备试试。" -ForegroundColor Green
+    Write-Host "  安装完成。启动 eNSP,先单独启动一台 AR 试试。" -ForegroundColor Green
     Write-Host "  要还原:双击 卸载.bat。" -ForegroundColor Green
     Write-Host "============================================================`n" -ForegroundColor Green
 }
@@ -577,9 +583,11 @@ function Do-Uninstall {
     }
 
     Write-Step "5/6 CLSID InprocServer32(需手动)"
-    Write-Warn "CLSID 劫持指向的正确原始值随 VBox 构建而异,本脚本不擅自改写。"
-    Write-Warn "请对 VirtualBox 7.2 跑一次【修复】(应用和功能 → VirtualBox → 修改/修复),"
-    Write-Warn "它会把 $CLSID_VBOX 改回 Oracle 原生 proxy/stub。"
+    Write-Warn "CLSID 项的原始状态随 VirtualBox 版本而异,本脚本不擅自改写。"
+    Write-Warn "实测原版 7.2.16 的 32 位视图里没有这个键,VirtualBox 的【修复】也不会删除它。"
+    Write-Warn "确认不再需要垫片后,在管理员命令提示符中删除即可还原:"
+    Write-Warn "  reg delete `"HKLM\SOFTWARE\Classes\WOW6432Node\CLSID\$CLSID_VBOX`" /f"
+    Write-Warn "安装前若用 reg export 备份过该键,也可以直接导入备份。"
 
     Write-Step "6/6 还原 x86\ 子目录的 VC++ 运行时"
     if ($VBoxDir) {
@@ -596,7 +604,7 @@ function Do-Uninstall {
         Write-Info "未定位 VirtualBox 目录,跳过 VC++ 运行时清理。"
     }
 
-    Write-Host "`n卸载流程完成(CLSID 项请按上面提示跑 VBox 修复)。`n" -ForegroundColor Green
+    Write-Host "`n卸载流程完成(CLSID 项请按上面第 5 步的提示手动处理)。`n" -ForegroundColor Green
 }
 # ---------------------------------------------------------------------------
 # host-only 网络自检(只读,不改动)
