@@ -25,6 +25,8 @@ eNSP 只认 VirtualBox 5.2，而 5.2 在新版 Windows 上装不上、不稳定�
 - **不再分发**华为的 `VAR_Plugin.dll`，改为在安装时从你本机的 eNSP 生成；
 - **修复**了 CE / CX / NE 系列关机卡死并崩溃的问题（根因在 VirtualBox 7 的 virtio 网卡，安装器自动规避）；
 - 提供补丁器，让 **Cloud 设备在 Npcap 下**也能绑定本机网卡（可选）；
+- **环境诊断能查出并修复**常见的 error 40 成因，包括 host-only 网卡名带 `#2` / `#3` 后缀（新装机器上也会遇到），
+  安装结束时会自动检测一遍；
 - 加入**可复现编译**和一组**测试 / 探针工具**；
 - 记录了排障过程，以及一处已定位、尚未修复的问题（见[已知问题](#已知问题与后续计划)）。
 
@@ -35,11 +37,12 @@ eNSP 只认 VirtualBox 5.2，而 5.2 在新版 Windows 上装不上、不稳定�
 | 项目 | 版本 |
 |---|---|
 | Windows | 11 家庭版 build 26300（eNSP 设为“Windows 7 兼容 + 以管理员身份运行”） |
-| CPU | Intel i9-13900HX（未开 Hyper-V / VBS） |
+| CPU | Intel i9-13900HX；Intel i5-11300H（均未开 Hyper-V / VBS） |
 | eNSP | V100R003C00SPC100（1.3.00.100） |
 | VirtualBox | 7.2.16 r174877 |
 | 抓包驱动 | WinPcap 4.1.3 + Npcap 1.89（**非**兼容模式） |
 | 已测设备 | AR2220、S5700、USG6000V、AC、CE6800、NE40E、NE9000；5 台同时启动；Cloud、接口抓包 |
+| 全新安装 | i5-11300H 机器上从零安装 VirtualBox / WinPcap / eNSP 后直接运行 `安装.bat`：AR、交换机、Cloud、接口抓包正常（需先修好 host-only 网卡名，见下） |
 
 开启 WSL2 / Hyper-V 的机器也能用（原作者测过），但 VirtualBox 会改走 Hyper-V 后端，设备启动明显变慢。
 
@@ -62,7 +65,7 @@ eNSP 只认 VirtualBox 5.2，而 5.2 在新版 Windows 上装不上、不稳定�
    - 部署垫片和补丁，并修正 CE / NE 系列虚拟机的网卡设置（此时弹一次 UAC，点“是”）。被替换的原文件都备份为 `.orig.bak`；
    - 注册 eNSP 的基础设备 VM；
    - 运行一次环境检测，并把报告保存到 `C:\ProgramData\ensp-vbox-shim\`。
-4. 启动 eNSP，先单独启动一台 AR 试试。
+4. 启动 eNSP，先单独启动一台 AR 试试。报错 40 时先运行 `installer\环境检查.bat`，报告第 [9] 节会列出原因和修复命令。
 
 **升级**：拉取新版本后重新运行 `安装.bat`，旧版垫片会被自动替换。
 
@@ -92,6 +95,10 @@ eNSP 只认 VirtualBox 5.2，而 5.2 在新版 Windows 上装不上、不稳定�
   （见 [`cloud-npcap.md`](docs/findings/cloud-npcap.md)）。
 - **升级或重装 VirtualBox 之后**：它会在所有网卡上重新启用 “VirtualBox NDIS6 Bridged Networking Driver”。
   eNSP 用不到物理网卡上的这一项，可以在无线网卡上关掉；**host-only 网卡上的那一项必须保留**。
+- **host-only 网卡的名字必须正好是 `VirtualBox Host-Only Ethernet Adapter`**，eNSP 把它写死了，带 `#2` / `#3` 后缀
+  就报 error 40。不要在 VirtualBox 里随手新建 / 删除 host-only 网卡，每新建一次编号就往上涨一次。已经带后缀的，
+  关闭 eNSP 后在管理员命令提示符里运行 `环境检查.bat -Fix hostonly-name`，完成后等 `VBoxSVC.exe` 退出再打开 eNSP
+  （见 [`hostonly-name-suffix.md`](docs/findings/hostonly-name-suffix.md)）。
 
 ## 卸载与回滚
 
@@ -116,6 +123,7 @@ eNSP 只认 VirtualBox 5.2，而 5.2 在新版 Windows 上装不上、不稳定�
 | IVirtualBox 方法区槽位整体少算 12（影响 `VAR_Plugin` 补丁、代理方法区、IMachine 映射） | 已确认；AR 实际可用 | [`vtable-reserved-slots.md`](docs/findings/vtable-reserved-slots.md) |
 | Cloud 设备不支持 Npcap 兼容模式 | **已修复**：补丁器 `patches/patch_pcap_version.py`（版本号 + 速率过滤，已在 eNSP 内验证；不在安装器内） | [`cloud-npcap.md`](docs/findings/cloud-npcap.md) |
 | CE / NE 关机卡 60 秒后 `VBoxDD.DLL` 崩溃；旧实例未退出时重开导致插件卡死 | **已修复**：根因为 VirtualBox virtio-net 对未连接网卡的 bug，安装器第 7 步规避（CE / NE 已在 eNSP 内回归） | [`svrp-shutdown-crash.md`](docs/findings/svrp-shutdown-crash.md) |
+| host-only 网卡名带 `#N` 后缀时 AR 报 40，安装却提示成功 | **已修复**：诊断修复项 `hostonly-name`，安装结束时自动检测；注册表残留占名的情形需手动处理 | [`hostonly-name-suffix.md`](docs/findings/hostonly-name-suffix.md) |
 | VirtualBox 5.2.44 导致 0xD1 蓝屏 | **已解决**（本项目的起点） | [`bsod-vbox52.md`](docs/findings/bsod-vbox52.md) |
 
 遇到问题请先运行 `installer\环境检查.bat`，再把生成的报告附在

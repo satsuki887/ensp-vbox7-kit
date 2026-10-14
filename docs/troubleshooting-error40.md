@@ -271,6 +271,8 @@ Get-NetTCPConnection | ? { $_.LocalPort -eq 56789 -or $_.RemotePort -eq 56789 } 
 
 ## 根因 G:host-only 网卡名带「#N」后缀(新装机器上也会出现)
 
+> 完整记录(名字写死的位置、后缀的来历、两次实测、注册表脚本)见 [`findings/hostonly-name-suffix.md`](findings/hostonly-name-suffix.md)。
+
 **现象**:AR(以及 AC / AP 等真 VM 设备)一启动就报 40,交换机正常;垫片日志全绿(`findMachine` / `clonevm` / `modifyvm` 都成功,失败在随后的 `startvm`)。`eNSP\vboxserver\log\VBoxManage.log` 里是:
 
 ```
@@ -313,7 +315,7 @@ Enable-NetAdapter  -InterfaceDescription "VirtualBox Host-Only Ethernet Adapter"
 
 **修复,情形 2:删光重建后名字仍带后缀。** Windows 的网络接口数据库 `HKLM\SYSTEM\CurrentControlSet\Control\NetworkSetup2\Interfaces` 里还留着一条已删除网卡的记录(其 `Kernel\IfDescr` 是不带后缀的名字),占着这个名字。`hostonly-name` 修复遇到这种情况会停下并说明原因,不会继续多建。该键归 TrustedInstaller 所有,管理员默认连读都读不了,本项目不自动处理。手动步骤如下(来自 2026-09-06 一次 VirtualBox 5.2 环境的实测记录;7.2 上尚未遇到这一情形):
 
-1. 取得 `NetworkSetup2` 的读写权限:以 TrustedInstaller 身份运行 `regedit`,或把该键的所有者改为 Administrators 并授予完全控制。
+1. 取得 `NetworkSetup2` 的读写权限:以 TrustedInstaller 身份运行 `regedit`,或把该键的所有者改为 Administrators 并授予完全控制(可直接使用的脚本见 [`findings/hostonly-name-suffix.md`](findings/hostonly-name-suffix.md))。
 2. 备份:`reg export "HKLM\SYSTEM\CurrentControlSet\Control\NetworkSetup2\Interfaces" ns2_backup.reg`。
 3. 用 `hostonlyif remove` 删掉全部 host-only 网卡。
 4. 删除 `Interfaces` 下 `Kernel\IfDescr` 含 `VirtualBox Host-Only` 的子键;再删除 `HKLM\SYSTEM\CurrentControlSet\Control\Network\{4D36E972-E325-11CE-BFC1-08002BE10318}\Descriptions` 下名为 `VirtualBox Host-Only Ethernet Adapter` 的值。
