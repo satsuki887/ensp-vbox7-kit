@@ -1116,7 +1116,15 @@ function Write-EnvReportSpoof {
 $LogDir = Join-Path $env:ProgramData "ensp-vbox-shim"
 try { if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null } } catch {}
 $LogPath = Join-Path $LogDir "install.log"
-Start-Transcript -Path $LogPath -Force -ErrorAction SilentlyContinue | Out-Null
+# Start-Transcript / Stop-Transcript 失败抛的是【终止性】错误:本文件顶部设了
+# $ErrorActionPreference = "Stop",-ErrorAction SilentlyContinue 挡不住。最常见的失败是
+# install.log 由上一次【提权】安装建立,普通用户对它只有读权限 —— 于是非提权的 -Check
+# (安装.bat -Check)一启动就整个退出(2026-10-14 实测)。写不进 ProgramData 时退到当前
+# 用户的 %TEMP%,再不行就不记日志,检测与安装照常进行。
+$transcriptOn = $false
+foreach ($tp in @($LogPath, (Join-Path $env:TEMP "ensp-vbox-shim-install.log"))) {
+    try { Start-Transcript -Path $tp -Force | Out-Null; $transcriptOn = $true; break } catch { }
+}
 
 $ensp = Find-EnspDir -Override $EnspDir
 if (-not $ensp) {
@@ -1153,10 +1161,10 @@ if ($Check) {
         Write-Err "安装前商定的修复没有完成,已停止安装(垫片与注册表均未改动)。"
         Write-Info "排掉上面的原因后重新双击 安装.bat 即可。"
         Write-Info "若想先装上垫片、环境稍后再修:重跑 安装.bat,修复那一步选 N 跳过。"
-        Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
+        if ($transcriptOn) { try { Stop-Transcript | Out-Null } catch { } }
         exit 1
     }
     Do-Install -EnspDir $ensp -VBoxDir $vbox -GrantSid $GrantSid
 }
 
-Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
+if ($transcriptOn) { try { Stop-Transcript | Out-Null } catch { } }
