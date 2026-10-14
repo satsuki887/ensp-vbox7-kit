@@ -33,6 +33,10 @@
 #     exists with no working stack under it: startvm still fails with
 #     VERR_INTNET_FLT_IF_NOT_FOUND, the same symptom as having repaired nothing.
 #
+#     Repair-RestoreHostOnlyIfName is the separate remedy for an adapter that
+#     exists but carries a "#N" suffix. It reuses steps 4 and 3 internally, in
+#     that order, on the adapter it creates.
+#
 #   - Two further steps sit OUTSIDE that chain, because nothing else depends on
 #     them and they depend on nothing else:
 #         5 Repair-RebuildPerfCounters  rebuild damaged Windows performance counters
@@ -415,9 +419,10 @@ function Repair-InstallNetLwf {
 # -AdapterName is the WINDOWS connection name, not the VBox one. It is resolved
 # through InterfaceDescription because the connection name is localized and
 # cannot be matched on. When it is omitted and exactly one host-only adapter
-# exists, that one is used; when several exist the step refuses rather than
-# picking one, because bouncing the wrong adapter is a real change to a machine
-# whose only problem may be elsewhere.
+# exists, that one is used; when several exist, the one whose description is
+# exactly the name eNSP hard-codes is used, and failing that the step refuses
+# rather than picking one, because bouncing the wrong adapter is a real change
+# to a machine whose only problem may be elsewhere.
 #
 # An adapter that arrives Disabled ends up Enabled; that is the intended outcome
 # for a repair step, since a host-only adapter that is down cannot be carrying
@@ -450,9 +455,23 @@ function Repair-BounceAdapter {
         return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
             -Reason "no VirtualBox Host-Only adapter found; run steps 1-2 and step 4 first"
     } else {
-        $names = @($facts | ForEach-Object { $_.InterfaceName })
-        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
-            -Reason ("several VirtualBox Host-Only adapters exist (" + ($names -join ", ") + "); pass -AdapterName to choose one")
+        # Several adapters, but only one can be the one eNSP uses: the one whose
+        # description is exactly the name eNSP hard-codes. That is the usual
+        # shape after a "#N" repair done by hand (the plain adapter plus a
+        # leftover suffixed one), and refusing there would leave the very
+        # adapter that needs the rebind un-bounced.
+        $exact = @()
+        if (Get-Command Get-EnspHostOnlyName -ErrorAction SilentlyContinue) {
+            $want = Get-EnspHostOnlyName
+            $exact = @($facts | Where-Object { $_.InterfaceDescription -eq $want })
+        }
+        if ($exact.Count -eq 1) {
+            $target = $exact[0]
+        } else {
+            $names = @($facts | ForEach-Object { $_.InterfaceName })
+            return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
+                -Reason ("several VirtualBox Host-Only adapters exist (" + ($names -join ", ") + "); pass -AdapterName to choose one")
+        }
     }
 
     $was = $target.Status
@@ -682,6 +701,191 @@ function Repair-CreateHostOnlyIf {
 
     return New-RepairResult -Ok $true -Changed $true -Commands $cmds `
         -Extra @{ InterfaceName = $name; NeedCreate = $needCreate; NeedIpConfig = $needIpConfig; NeedDhcp = $needDhcp; DhcpEnabled = $false }
+}
+
+# ===========================================================================
+# restore the exact adapter name eNSP hard-codes
+# ===========================================================================
+
+# eNSP binds to "VirtualBox Host-Only Ethernet Adapter" by exact name (where it
+# is hard-coded: Get-EnspHostOnlyName in checks.ps1). When the adapter carries a
+# "#N" suffix instead, startvm fails with
+#     Interface ('VirtualBox Host-Only Ethernet Adapter') is not a Host-Only
+#     Adapter interface (VERR_INTERNAL_ERROR)
+# Re-registering the base VMs does not help; the adapter has to carry the name.
+#
+# Windows hands out the suffix when the adapter is created: the plain
+# description is used only if no other interface record owns it. So:
+#     1 remove every "<name> #N" host-only interface
+#     2 hostonlyif create        -> the plain name, if nothing else owns it
+#     3 Repair-CreateHostOnlyIf  on the new name: IP and DHCP entry
+#     4 Repair-BounceAdapter     on the new adapter
+# Removing comes first on purpose: creating while a suffixed adapter still
+# exists only yields the next suffix. Step 4 is not optional either. Measured
+# 2026-10-14 (VBox 7.2.16): right after the create, startvm moved from
+# VERR_INTERNAL_ERROR to VERR_INTNET_FLT_IF_NOT_FOUND -- the binding read
+# Enabled=True but the filter was not in the data path, the same state step 2
+# of the driver chain leaves -- and only the disable/enable cleared it.
+#
+# What this cannot fix: a stale record in Windows' interface database
+# (HKLM\SYSTEM\CurrentControlSet\Control\NetworkSetup2\Interfaces, owned by
+# TrustedInstaller) that still owns the plain name. Step 2 then comes back
+# suffixed again, and creating more adapters only raises the number. The record
+# has to be deleted and the machine rebooted BEFORE the next create, which is a
+# manual procedure (docs/troubleshooting-error40.md, root cause G). This
+# function detects that case, still finishes steps 3-4 on whatever it created
+# so the machine is left with one configured adapter -- no worse than it
+# started -- and returns Ok=$false naming the cause.
+#
+# Only "<name> #N" interfaces are removed; any other name is left alone. A VM of
+# the user's own that was bound to a removed adapter loses that binding, which
+# is why callers must show the impact before running this.
+#
+# Skipped when an interface with the exact name already exists. Extra suffixed
+# adapters next to it do not break eNSP, and removing them is the user's call,
+# not a side effect.
+function Repair-RestoreHostOnlyIfName {
+    param(
+        [string]$VBoxDir = "",
+        [string]$IPAddress = "192.168.56.1",
+        [string]$NetMask = "255.255.255.0",
+        [int]$SettleSeconds = 5,
+        [switch]$DryRun
+    )
+
+    $step = "hostonly name"
+    if (-not (Test-ChecksAvailable) -or -not (Get-Command Get-HostOnlyNameVerdict -ErrorAction SilentlyContinue)) {
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
+            -Reason "checks.ps1 is not loaded, so the current interface names cannot be read"
+    }
+
+    $vbm = Resolve-VBoxManageExe -VBoxDir $VBoxDir
+    if (-not $vbm) {
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) `
+            -Reason "VirtualBox install directory not found; pass -VBoxDir"
+    }
+    if (-not (Test-Path $vbm)) {
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) -Reason ("VBoxManage.exe not found: " + $vbm)
+    }
+
+    $state = Get-HostOnlyState -VBoxManage $vbm
+    if (-not $state.Ok) {
+        return New-RepairResult -Ok $false -DryRun ([bool]$DryRun) -Reason $state.Error
+    }
+
+    $before   = @($state.Interfaces | ForEach-Object { $_.Name })
+    $verdict  = Get-HostOnlyNameVerdict -VBoxNames $before
+    $required = $verdict.RequiredName
+
+    if ($verdict.Present) {
+        if ($DryRun) { Write-DryRunLine $step ("an interface named '" + $required + "' exists; nothing to do") }
+        return New-RepairResult -Ok $true -Skipped $true -DryRun ([bool]$DryRun) `
+            -Extra @{ InterfaceName = $required; Removed = @() }
+    }
+
+    # The plan. The connection name of the adapter to bounce does not exist
+    # until the create has run, so the plan shows the -InterfaceDescription
+    # form; the executed commands returned below carry the real -Name.
+    $cmds = @()
+    foreach ($n in $verdict.Suffixed) {
+        $cmds += (Format-CommandLine -Exe $vbm -Arguments @("hostonlyif", "remove", $n))
+    }
+    $cmds += (Format-CommandLine -Exe $vbm -Arguments @("hostonlyif", "create"))
+    $cmds += (Format-CommandLine -Exe $vbm -Arguments @("hostonlyif", "ipconfig", $required, ("--ip=" + $IPAddress), ("--netmask=" + $NetMask)))
+    $cmds += (Format-CommandLine -Exe "Disable-NetAdapter" -Arguments @("-InterfaceDescription", $required, "-Confirm:`$false"))
+    $cmds += (Format-CommandLine -Exe "Enable-NetAdapter"  -Arguments @("-InterfaceDescription", $required, "-Confirm:`$false"))
+
+    if ($DryRun) {
+        foreach ($c in $cmds) { Write-DryRunLine $step ("would run: " + $c) }
+        Write-DryRunLine $step "a DHCP entry is added (disabled) only if none serves the new adapter"
+        return New-RepairResult -Ok $true -DryRun $true -Commands $cmds `
+            -Extra @{ InterfaceName = $required; Removed = @($verdict.Suffixed) }
+    }
+    if (-not (Test-RepairRights $false)) {
+        return New-RepairResult -Ok $false -Commands $cmds `
+            -Reason "not elevated; removing and creating host-only interfaces needs administrator rights"
+    }
+
+    $done = @()
+    $removed = @()
+    foreach ($n in $verdict.Suffixed) {
+        $done += (Format-CommandLine -Exe $vbm -Arguments @("hostonlyif", "remove", $n))
+        $rm = Invoke-Native -Exe $vbm -Arguments @("hostonlyif", "remove", $n)
+        if (-not $rm.Ok -or $rm.ExitCode -ne 0) {
+            return New-RepairResult -Ok $false -Changed ($removed.Count -gt 0) -Commands $done `
+                -Extra @{ Removed = @($removed) } `
+                -Reason ("hostonlyif remove '" + $n + "' failed (exit " + $rm.ExitCode + "): " + ($rm.Output -join " "))
+        }
+        $removed += $n
+    }
+    if ($removed.Count -gt 0) { Start-Sleep -Seconds $SettleSeconds }
+
+    $done += (Format-CommandLine -Exe $vbm -Arguments @("hostonlyif", "create"))
+    $create = Invoke-Native -Exe $vbm -Arguments @("hostonlyif", "create")
+    if (-not $create.Ok -or $create.ExitCode -ne 0) {
+        $left = ""
+        if ($removed.Count -gt 0 -and $removed.Count -eq $before.Count) {
+            $left = "; every host-only adapter was already removed, so none is left -- run `"VBoxManage hostonlyif create`" by hand"
+        }
+        return New-RepairResult -Ok $false -Changed ($removed.Count -gt 0) -Commands $done `
+            -Extra @{ Removed = @($removed) } `
+            -Reason ("hostonlyif create failed (exit " + $create.ExitCode + "): " + ($create.Output -join " ") + $left)
+    }
+
+    $name = Parse-CreatedHostOnlyIfName -Lines $create.Output
+    if (-not $name) {
+        $after = Get-HostOnlyState -VBoxManage $vbm
+        if ($after.Ok) {
+            foreach ($i in $after.Interfaces) {
+                if ($before -notcontains $i.Name) { $name = $i.Name; break }
+            }
+        }
+    }
+    if (-not $name) {
+        return New-RepairResult -Ok $false -Changed $true -Commands $done -Extra @{ Removed = @($removed) } `
+            -Reason ("could not read the created interface name from VBoxManage output: " + ($create.Output -join " "))
+    }
+
+    # IP and DHCP entry, by the same code the driver chain uses, so the two
+    # paths cannot drift on addresses or on the DHCP-disabled rule.
+    $cfg = Repair-CreateHostOnlyIf -VBoxDir $VBoxDir -InterfaceName $name -IPAddress $IPAddress -NetMask $NetMask
+    if (-not $cfg.Skipped) { $done += @($cfg.Commands) }
+    if (-not $cfg.Ok) {
+        return New-RepairResult -Ok $false -Changed $true -Commands $done `
+            -Extra @{ InterfaceName = $name; Removed = @($removed) } -Reason $cfg.Reason
+    }
+
+    # The new adapter can take a moment to show up on the Windows side.
+    $win = $null
+    for ($try = 0; ($try -lt 10) -and (-not $win); $try++) {
+        foreach ($f in @(Get-HostOnlyNetAdapterFacts)) {
+            if ($f.InterfaceDescription -eq $name) { $win = $f; break }
+        }
+        if (-not $win) { Start-Sleep -Seconds 1 }
+    }
+    if (-not $win) {
+        return New-RepairResult -Ok $false -Changed $true -Commands $done `
+            -Extra @{ InterfaceName = $name; Removed = @($removed) } `
+            -Reason ("adapter '" + $name + "' was created but Windows does not list it; disable and re-enable it by hand")
+    }
+    $bounce = Repair-BounceAdapter -AdapterName $win.InterfaceName
+    $done += @($bounce.Commands)
+    if (-not $bounce.Ok) {
+        return New-RepairResult -Ok $false -Changed $true -Commands $done `
+            -Extra @{ InterfaceName = $name; Removed = @($removed) } -Reason $bounce.Reason
+    }
+
+    if ($name -ne $required) {
+        return New-RepairResult -Ok $false -Changed $true -Commands $done `
+            -Extra @{ InterfaceName = $name; Removed = @($removed); StillSuffixed = $true } `
+            -Reason ("the new adapter is still named '" + $name + "', so something else still owns '" + $required +
+                     "' -- most likely a stale record under HKLM\SYSTEM\CurrentControlSet\Control\NetworkSetup2\Interfaces. " +
+                     "Creating more adapters will not help: delete that record and reboot BEFORE creating again " +
+                     "(docs/troubleshooting-error40.md, root cause G). Meanwhile this adapter is configured with " + $IPAddress + ".")
+    }
+
+    return New-RepairResult -Ok $true -Changed $true -Commands $done `
+        -Extra @{ InterfaceName = $name; Removed = @($removed) }
 }
 
 # ===========================================================================

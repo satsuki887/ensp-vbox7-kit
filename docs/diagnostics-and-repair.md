@@ -22,10 +22,11 @@ v0.1.4 之后暴露的主要问题不是垫片本身,而是故障归因。典型
 
 ### 可修条目
 
-共 7 项,id 可从报告第 [9] 节抄录。
+共 8 项,id 可从报告第 [9] 节抄录。
 
 ```
   host-only 网络驱动 / 接口             <有损,执行前单独确认>
+  host-only 网卡名带「#N」后缀          <有损,执行前单独确认>
   host-only 网络绑定失效               <有损,执行前单独确认>
   Windows 性能计数器损坏               <无损>
   防火墙未放行 eNSP_VBoxServer         <无损>
@@ -50,6 +51,14 @@ v0.1.4 之后暴露的主要问题不是垫片本身,而是故障归因。典型
 
 该判据依赖日志解析。在此之前的版本中 `Repair-BounceAdapter` 已实现但无调用方。
 
+### `hostonly-name` 的判据与做法
+
+判据:第 3 层列出了接口,但没有一块的名字恰为 `VirtualBox Host-Only Ethernet Adapter`(`Get-HostOnlyNameVerdict`)。一个接口都没有时归 `hostonly` 项。
+
+做法(`Repair-RestoreHostOnlyIfName`):删掉全部 `VirtualBox Host-Only Ethernet Adapter #N` → `hostonlyif create` → 配 `192.168.56.1/24` 与 DHCP 条目(复用 `Repair-CreateHostOnlyIf`)→ 禁用 / 启用新网卡(复用 `Repair-BounceAdapter`)。名字不是这种形式的接口一概不动;已有不带后缀的网卡时整项跳过,旁边多余的带后缀网卡不算故障、也不顺手删。新建的网卡若仍带后缀,说明有残留记录占名,本项配好这块网卡后以失败结束并指向手动步骤,不再多建。
+
+`Repair-BounceAdapter` 在有多块 host-only 网卡时,若恰有一块名字是上述精确名字,就选它,不再整项拒绝 —— 手动修过 `#N` 的机器上常是「干净的一块 + 遗留的带后缀的一块」,拒绝的话需要重绑的那块反而没人管。
+
 ### 安全属性
 
 - 有损档的放行提示读取不到输入时,一律按不执行处理。判据是读到的值为 `$null`(EOF)而非空串(回车);`Read-Host` 无法区分两者,故使用 `[Console]::ReadLine()`。
@@ -67,7 +76,9 @@ v0.1.4 之后暴露的主要问题不是垫片本身,而是故障归因。典型
 两项设计为如实呈现、不作判定:
 
 - host-only DHCP 的启用状态;
-- 适配器名带 `#2` 后缀本身不判为故障,只报告「设备模板中的名称与实际接口名不一致」—— 致命的是不一致本身。
+- 适配器名带 `#2` 后缀本身不判为故障:另有一块名字恰为 `VirtualBox Host-Only Ethernet Adapter` 的网卡时,多出来的带后缀网卡不影响 eNSP。
+
+  **勘误(2026-10-14)**:本条原先写的是「只报告模板名与实际接口名不一致,致命的是不一致本身」,并把「重新注册设备会重写模板中的名字」当作修法。两点都不成立:eNSP 的插件与 `eNSP_VBoxServer.exe` 里也写死了这个名字,`注册设备.bat` 也从不改它。现在的判据是「实际接口里有没有名字恰为该字符串的网卡」(`Get-HostOnlyNameVerdict`),没有时报告第 [9] 节给出 `hostonly-name` 修复(删掉带后缀的网卡后重建)。见 [troubleshooting-error40.md](troubleshooting-error40.md) 根因 G。
 
 `vboxserver\` 写权限项读取 ACL,不执行实际写入。维持全程只读的承诺需要如此处理,代价是 deny 项与组的嵌套未按系统方式展开,结论偏保守:显示可写时基本确实可写,显示不可写时需用启动 eNSP 的账户复核。报告同时输出原始授权列表。
 

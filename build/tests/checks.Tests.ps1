@@ -1159,4 +1159,111 @@ foreach ($kv in $uninstallReaders.GetEnumerator()) {
     Assert-False ($kv.Value -match $pipeShape) ($kv.Key + ": the uninstall loop is not a ForEach-Object pipeline")
 }
 
+Write-Host "=== Task 16: host-only adapter name with a #N suffix ==="
+
+# 2026-10-14: a fresh VirtualBox install left the only adapter named
+# "... #3". eNSP hard-codes the plain name, so every AR failed with error 40,
+# while the report only said "matched 0 / 2" and advised re-registering the
+# devices -- which never touches the name. These pin the verdict, the repair's
+# plan, and that the wrong advice is gone.
+$plain = "VirtualBox Host-Only Ethernet Adapter"
+Assert-Equal (Get-EnspHostOnlyName) $plain "name: the hard-coded name"
+
+$tplLines = @(
+    '        <Adapter slot="0" enabled="true" type="I82540EM">',
+    '          <HostOnlyInterface name="VirtualBox Host-Only Ethernet Adapter"/>',
+    '        </Adapter>',
+    '      <Snapshot name="AR_Base_Link">',
+    '            <HostOnlyInterface name="VirtualBox Host-Only Ethernet Adapter" />'
+)
+$tn = @(Get-HostOnlyNamesFromTemplate -Lines $tplLines)
+Assert-Equal $tn.Count 2 "template: live and snapshot copies are both read"
+Assert-Equal $tn[1] $plain "template: the self-closing form with a space is read"
+Assert-Equal @(Get-HostOnlyNamesFromTemplate -Lines @("<Machine/>")).Count 0 "template: none yields an empty list"
+
+$v = Get-HostOnlyNameVerdict -VBoxNames @("$plain #3")
+Assert-True  $v.NeedsRestore "verdict: only a suffixed adapter needs a restore"
+Assert-Equal $v.Suffixed.Count 1 "verdict: the suffixed adapter is listed for removal"
+
+$v = Get-HostOnlyNameVerdict -VBoxNames @("$plain #2", $plain)
+Assert-True  $v.Present "verdict: the plain name is found next to a suffixed one"
+Assert-False $v.NeedsRestore "verdict: a leftover suffixed adapter alone is not a defect"
+
+$v = Get-HostOnlyNameVerdict -VBoxNames @()
+Assert-False $v.Known "verdict: no interfaces means not judged"
+Assert-False $v.NeedsRestore "verdict: no interfaces is the missing-adapter finding, not this one"
+
+$v = Get-HostOnlyNameVerdict -VBoxNames @("Some Other Adapter", "$plain #12")
+Assert-Equal ($v.Suffixed -join "|") "$plain #12" "verdict: only '<name> #N' is ever removed"
+$v = Get-HostOnlyNameVerdict -VBoxNames @("$plain #2x")
+Assert-Equal $v.Suffixed.Count 0 "verdict: a near-miss suffix is not matched"
+
+# --- the repair's plan, with VBoxManage and the adapter list stubbed ---------
+# A child scope, so the stubs never leak into the rest of the suite.
+$fakeExe = Join-Path $env:SystemRoot "System32\cmd.exe"
+$restore = & {
+    . $fixPath
+    function Resolve-VBoxManageExe { param([string]$VBoxDir) return $fakeExe }
+    function Get-HostOnlyState {
+        param([string]$VBoxManage)
+        return [pscustomobject]@{ Ok = $true; Error = ""; Servers = @(); Joined = @()
+            Interfaces = @([pscustomobject]@{ Name = "$plain #3"; IPAddress = "192.168.56.1"; Status = "Up"; VBoxNetworkName = "HostInterfaceNetworking-$plain #3" }) }
+    }
+    Repair-RestoreHostOnlyIfName -DryRun 6>$null
+}
+Assert-True $restore.Ok "restore plan: ok"
+Assert-True $restore.DryRun "restore plan: dry run changes nothing"
+$rc = @($restore.Commands)
+$iRemove = -1; $iCreate = -1; $iDisable = -1
+for ($i = 0; $i -lt $rc.Count; $i++) {
+    if (($iRemove -lt 0) -and ($rc[$i] -match 'hostonlyif remove ".*#3"')) { $iRemove = $i }
+    if (($iCreate -lt 0) -and ($rc[$i] -match 'hostonlyif create')) { $iCreate = $i }
+    if (($iDisable -lt 0) -and ($rc[$i] -match '^Disable-NetAdapter')) { $iDisable = $i }
+}
+Assert-True ($iRemove -ge 0) "restore plan: the suffixed adapter is removed"
+Assert-True ($iCreate -gt $iRemove) "restore plan: removal comes before the create"
+Assert-True ($iDisable -gt $iCreate) "restore plan: the new adapter is bounced after the create"
+Assert-True (@($rc | Where-Object { $_ -match 'ipconfig' -and $_ -match '192\.168\.56\.1' }).Count -eq 1) "restore plan: the new adapter gets 192.168.56.1"
+
+$restoreOk = & {
+    . $fixPath
+    function Resolve-VBoxManageExe { param([string]$VBoxDir) return $fakeExe }
+    function Get-HostOnlyState {
+        param([string]$VBoxManage)
+        return [pscustomobject]@{ Ok = $true; Error = ""; Servers = @(); Joined = @()
+            Interfaces = @(
+                [pscustomobject]@{ Name = $plain; IPAddress = "192.168.56.1"; Status = "Up"; VBoxNetworkName = "HostInterfaceNetworking-$plain" },
+                [pscustomobject]@{ Name = "$plain #2"; IPAddress = "192.168.162.1"; Status = "Up"; VBoxNetworkName = "HostInterfaceNetworking-$plain #2" }) }
+    }
+    Repair-RestoreHostOnlyIfName -DryRun 6>$null
+}
+Assert-True ($restoreOk.Ok -and $restoreOk.Skipped) "restore plan: skipped when the plain name exists"
+Assert-Equal @($restoreOk.Commands).Count 0 "restore plan: and nothing is planned"
+
+# --- the bounce picks the plain adapter when several exist ------------------
+if (Get-Command Disable-NetAdapter -ErrorAction SilentlyContinue) {
+    $bounce = & {
+        . $fixPath
+        function Get-HostOnlyNetAdapterFacts {
+            return @(
+                [pscustomobject]@{ InterfaceName = "eth7"; InterfaceDescription = "$plain #2"; Status = "Up"; IPv4 = "192.168.162.1" },
+                [pscustomobject]@{ InterfaceName = "eth8"; InterfaceDescription = $plain; Status = "Up"; IPv4 = "192.168.56.1" })
+        }
+        Repair-BounceAdapter -DryRun 6>$null
+    }
+    Assert-True $bounce.Ok "bounce: several adapters no longer refuse when one carries the plain name"
+    Assert-Equal $bounce.AdapterName "eth8" "bounce: and that one is chosen"
+}
+
+# --- diag offers it, the installer's self-check no longer misadvises ---------
+Assert-True ($diagText -match 'Id\s*=\s*"hostonly-name"') "diag: the hostonly-name finding exists"
+Assert-True ($diagText -match 'Fn = "Repair-RestoreHostOnlyIfName"') "diag: it runs the restore"
+Assert-True ($diagText -match 'Get-HostOnlyNameVerdict') "diag: it judges by the shared verdict"
+# The withdrawn advice, by code point so this file stays ASCII:
+# "rewrites the template" in Chinese.
+$rewriteTpl = [string][char]0x91CD + [char]0x5199 + [char]0x6A21 + [char]0x677F
+$installText = Get-Content -Path (Join-Path $repoRoot "installer\install.ps1") -Raw
+Assert-False ($diagText.Contains($rewriteTpl)) "advice: diag.ps1 no longer claims re-registering rewrites the template"
+Assert-False ($installText.Contains($rewriteTpl)) "advice: install.ps1 no longer claims it either"
+
 Complete-TestRun

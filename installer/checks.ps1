@@ -329,10 +329,72 @@ function Join-DhcpServerToHostOnlyIf {
 
 # --- layer 6: name comparison ---------------------------------------------
 #
-# A "#N" suffix is NOT itself a defect. What breaks eNSP is a mismatch between
-# the name stored in the device template (.vbox) and the name VirtualBox
-# actually reports. Re-registering the device rewrites the template name and
-# resolves the mismatch, which is why the community fix works.
+# eNSP needs an adapter named EXACTLY "VirtualBox Host-Only Ethernet Adapter".
+# The string is hard-coded, not configured: it is the HostOnlyInterface name in
+# every shipped device template (live section and _Link snapshot alike), it is
+# a literal in VAR_Plugin.dll, NGFW_Plugin.dll and eNSP_Client.exe, and
+# eNSP_VBoxServer.exe runs `hostonlyif ipconfig "VirtualBox Host-Only Ethernet
+# Adapter" ...` with it. An adapter that came up as "... #2" / "... #3" makes
+# startvm fail with
+#     Interface ('VirtualBox Host-Only Ethernet Adapter') is not a Host-Only
+#     Adapter interface (VERR_INTERNAL_ERROR)
+# and eNSP shows error 40.
+#
+# An earlier version of this comment said re-registering the device rewrites
+# the template name. It does not: register_vms.ps1 never touches the adapter
+# name, and the binaries would still ask for the exact string anyway. The fix
+# is an adapter that carries the exact name (fix.ps1,
+# Repair-RestoreHostOnlyIfName). Measured 2026-10-14: a fresh VirtualBox
+# install left the only adapter named "... #3"; removing it and creating one
+# again gave the plain name, and AR started.
+function Get-EnspHostOnlyName {
+    return "VirtualBox Host-Only Ethernet Adapter"
+}
+
+# Pure: the HostOnlyInterface names in a .vbox file, in file order. A template
+# carries the name twice (live <Hardware> and the _Link snapshot's copy) and
+# both are returned, because a clone made from the snapshot uses the second.
+function Get-HostOnlyNamesFromTemplate {
+    param([string[]]$Lines)
+    $names = @()
+    foreach ($line in @($Lines)) {
+        if ($line -match 'HostOnlyInterface\s+name="([^"]*)"') { $names += $Matches[1] }
+    }
+    return $names
+}
+
+# Pure: does the "#N suffix" root cause apply? Judged on the VBox-side names
+# (layer 3) against the name eNSP hard-codes, NOT against the template: a
+# template hand-edited to match a suffixed adapter still leaves the binaries
+# asking for the exact string.
+#   Known         layer 3 listed at least one interface. With none there is
+#                 nothing to rename; the missing-adapter finding covers that.
+#   Present       some interface carries the exact name
+#   Suffixed      the "<name> #N" interfaces, i.e. what a restore removes.
+#                 Interfaces with any other name are never touched.
+#   NeedsRestore  Known and not Present
+function Get-HostOnlyNameVerdict {
+    param([string[]]$VBoxNames)
+    $required = Get-EnspHostOnlyName
+    $pattern  = '^' + [regex]::Escape($required) + ' #\d+$'
+    $names    = @(@($VBoxNames) | Where-Object { $_ })
+    $present  = $false
+    $suffixed = @()
+    foreach ($n in $names) {
+        if ($n -eq $required) { $present = $true }
+        elseif ($n -match $pattern) { $suffixed += $n }
+    }
+    return [pscustomobject]@{
+        RequiredName = $required
+        Known        = ($names.Count -gt 0)
+        Present      = $present
+        Suffixed     = @($suffixed)
+        NeedsRestore = (($names.Count -gt 0) -and (-not $present))
+    }
+}
+
+# Template names vs the names VirtualBox reports. Kept as the report's layer-6
+# view; the repair decision is Get-HostOnlyNameVerdict above.
 function Compare-HostOnlyName {
     param([string[]]$VBoxNames, [string[]]$TemplateNames)
     $matched = 0

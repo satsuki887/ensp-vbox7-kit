@@ -356,6 +356,8 @@ function Get-RepairFindings {
     param([string]$VBoxDir = "", [string]$EnspDir = "")
 
     $items = @()
+    # 由下面 host-only 那一节填;$null = 没读到,与「读到 0 个」分开。
+    $hoIfNames = $null
     $vboxDirFound = Find-VBoxDir -Override $VBoxDir
     $vboxManage = ""
     if ($vboxDirFound) { $vboxManage = Join-Path $vboxDirFound "VBoxManage.exe" }
@@ -374,7 +376,10 @@ function Get-RepairFindings {
         $ifCount = -1
         if ($vboxManage) {
             $probe = Invoke-Probe -Exe $vboxManage -Arguments @("list", "hostonlyifs")
-            if ($probe.Ok) { $ifCount = @(Parse-HostOnlyIfs -Lines $probe.Lines).Count }
+            if ($probe.Ok) {
+                $hoIfNames = @(Parse-HostOnlyIfs -Lines $probe.Lines | ForEach-Object { $_.Name })
+                $ifCount = $hoIfNames.Count
+            }
         }
 
         if ($vboxDirFound) {
@@ -409,6 +414,49 @@ function Get-RepairFindings {
         }
     } catch {
         $items += New-UnjudgedItem -Id "hostonly-unknown" -Title "host-only 网络状态:未能判定" `
+            -Why ("探测出错 —— " + $_.Exception.Message)
+    }
+
+    # --- host-only 网卡名带「#N」后缀(对应第 6 层)----------------------------
+    #
+    # eNSP 只认名字恰为「VirtualBox Host-Only Ethernet Adapter」的网卡:设备模板、
+    # 插件、eNSP_VBoxServer.exe 里都写死了这个字符串(见 checks.ps1 的
+    # Get-EnspHostOnlyName)。网卡只剩带后缀的那种时,startvm 报
+    # 「Interface (...) is not a Host-Only Adapter interface」,eNSP 报 40。
+    #
+    # 判据是【实际接口里有没有这个精确名字】,不是拿模板比对:模板若被人改成带后缀
+    # 的名字,比对会通过,插件照样找不到。一个接口都没有的情形归上一项。
+    #
+    # 2026-10-14 一台新装机器:安装前检查已经打出「匹配 0 / 2」,但这里当时没有
+    # 对应条目,安装器照样显示成功,运行时检测也报「没有需要处置的项」。
+    try {
+        if ($vboxDirFound -and ($null -ne $hoIfNames)) {
+            $nv = Get-HostOnlyNameVerdict -VBoxNames $hoIfNames
+            if ($nv.NeedsRestore) {
+                $removeText = "(没有可删的)"
+                if ($nv.Suffixed.Count -gt 0) { $removeText = ($nv.Suffixed -join ", ") }
+                $items += [pscustomobject]@{
+                    Id        = "hostonly-name"
+                    Tier      = "confirm"
+                    TierLabel = "<有损,执行前单独确认>"
+                    Title     = "host-only 网卡名带「#N」后缀,eNSP 认不出"
+                    Symptom   = "AR / AC / AP 一启动就报 40,VBoxManage.log 里是「Interface ('" + $nv.RequiredName + "') is not a Host-Only Adapter interface」"
+                    Evidence  = ("实际接口: " + ($hoIfNames -join ", ") + ";没有名字恰为「" + $nv.RequiredName + "」的那一块")
+                    Impact    = @(
+                        ("删除带后缀的 host-only 网卡: " + $removeText)
+                        "然后新建一块、配 192.168.56.1/24,再禁用/启用一次让过滤驱动挂上 ——"
+                        "本机网络会短暂中断(数秒)。"
+                        "你自己的 VirtualBox 虚拟机若绑在被删的网卡上,之后要改绑到新网卡。"
+                        "新建的网卡若仍带后缀,说明系统里有残留记录占着这个名字;本工具不会再试"
+                        "(多建只会让编号继续往上涨),失败信息会指向手动步骤。"
+                    )
+                    Steps     = @( [pscustomobject]@{ Fn = "Repair-RestoreHostOnlyIfName"; Args = @{ VBoxDir = $vboxDirFound } } )
+                    Manual    = @()
+                }
+            }
+        }
+    } catch {
+        $items += New-UnjudgedItem -Id "hostonly-name-unknown" -Title "host-only 网卡名:未能判定" `
             -Why ("探测出错 —— " + $_.Exception.Message)
     }
 
@@ -836,7 +884,14 @@ function Invoke-RepairRun {
             if (-not $r.Ok) {
                 Write-Note ("[失败] " + $step.Fn + ": " + $r.Reason)
                 if ($r.Commands -and $r.Commands.Count -gt 0) {
-                    Write-Note "  该步的命令行(可手动执行):"
+                    # Changed = 这一步失败前已经改动了系统,列出的是【已执行】的命令,
+                    # 不是让人照着再跑一遍的 —— 例如 hostonly-name 重建后仍带后缀时,
+                    # 再跑一次 hostonlyif create 只会让编号继续往上涨。
+                    if ($r.Changed) {
+                        Write-Note "  该步失败前已执行的命令(不要照着重跑,先按上面的原因处理):"
+                    } else {
+                        Write-Note "  该步的命令行(可手动执行):"
+                    }
                     foreach ($c in @($r.Commands)) { Write-Host ("      " + $c) }
                 }
                 $failed = $true
@@ -1485,10 +1540,8 @@ try {
         if (-not (Test-Path $tplPath)) {
             Write-Fail "第 6 层" ("找不到模板 " + $tplPath)
         } else {
-            $tplNames = @()
-            foreach ($line in (Get-Content -Path $tplPath -ErrorAction Stop)) {
-                if ($line -match 'HostOnlyInterface\s+name="([^"]*)"') { $tplNames += $Matches[1] }
-            }
+            $tplNames = @(Get-HostOnlyNamesFromTemplate -Lines @(Get-Content -Path $tplPath -ErrorAction Stop))
+            $wantName = Get-EnspHostOnlyName
             Write-Fact "模板中的接口名" $(if ($tplNames.Count) { ($tplNames -join " | ") } else { "(模板里没有 HostOnlyInterface 项)" })
 
             if ($ifNames.Count -eq 0) {
@@ -1503,11 +1556,31 @@ try {
                 if ($cmp.HasMismatch) {
                     Write-Host ("  [ !! ] 模板里有 " + $cmp.MissingInVBox.Count + " 个名字在实际接口中不存在:")
                     foreach ($m in $cmp.MissingInVBox) { Write-Host ("         " + $m) }
-                    Write-Note "  这是 「#2」 类问题的正确判据。修法是重新注册设备(会重写模板中的名字);"
-                    Write-Note "  名字一致时带后缀也能用,不用去动 「#2」 本身。"
                 } else {
                     Write-Host "  [ OK ] 模板中的接口名与实际接口一致。"
                 }
+            }
+
+            # 判据说明。eNSP 认的是写死的精确名字,不只是模板里的那一份,所以这里
+            # 另外按精确名字判一次 —— 与第 [9] 节 hostonly-name 用的是同一个函数。
+            if ($ifNames.Count -gt 0) {
+                $nv = Get-HostOnlyNameVerdict -VBoxNames $ifNames
+                if ($nv.NeedsRestore) {
+                    Write-Host ("  [ !! ] 实际接口里没有名字恰为「" + $wantName + "」的网卡。")
+                    Write-Note "  eNSP 只认这个精确名字 —— 设备模板、插件、eNSP_VBoxServer.exe 里都写死了它,"
+                    Write-Note "  带「#N」后缀的网卡它认不出,startvm 报「is not a Host-Only Adapter interface」。"
+                    Write-Note "  重新注册设备【不会】改这个名字。修法见第 [9] 节 hostonly-name:"
+                    Write-Note "  删掉带后缀的网卡后重建一块,新网卡通常就拿回不带后缀的名字。"
+                } elseif ($ifNames.Count -gt 1) {
+                    Write-Note ("  另有 " + ($ifNames.Count - 1) + " 块别的 host-only 网卡。eNSP 只用「" + $wantName + "」那一块,")
+                    Write-Note "  多出来的不影响 eNSP;不用了可以 VBoxManage hostonlyif remove 删掉,删完不要再 create。"
+                }
+            }
+            $oddTpl = @($tplNames | Where-Object { $_ -ne $wantName })
+            if ($oddTpl.Count -gt 0) {
+                Write-Note ("  模板里的名字不是 eNSP 出厂的「" + $wantName + "」—— 模板被改过。")
+                Write-Note "  插件和 eNSP_VBoxServer.exe 里写死的仍是出厂名,只改模板能否工作未经验证;"
+                Write-Note "  稳妥的做法是把模板改回出厂名(或重装 eNSP),再让网卡本身叫这个名字。"
             }
         }
     }

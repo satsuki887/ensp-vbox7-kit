@@ -83,7 +83,7 @@
 
 ## 根因 D1:host-only 网络过滤驱动绑定失效(升级 VirtualBox 后常见)
 
-> host-only 网络坏掉有两类**独立**成因,本节是 **D1**(适配器还在、只是绑定失效),下节是 **D2**(驱动包从未注册、适配器根本不存在)。判别只需一句:**网络连接里能看到名字干净的 `VirtualBox Host-Only Ethernet Adapter` 就是 D1;看不到这块适配器,或只看到带 `#2` 后缀的副本,就是 D2**。**D1 的修法对 D2 无效**——D2 没有适配器可禁用、可启用,也没有绑定可刷新。
+> host-only 网络坏掉有两类**独立**成因,本节是 **D1**(适配器还在、只是绑定失效),下节是 **D2**(驱动包从未注册、适配器根本不存在)。判别只需一句:**网络连接里能看到名字干净的 `VirtualBox Host-Only Ethernet Adapter` 就是 D1;看不到这块适配器就是 D2**。**D1 的修法对 D2 无效**——D2 没有适配器可禁用、可启用,也没有绑定可刷新。只看到带 `#N` 后缀的适配器时,先看 `VBoxDrvInst.exe list`:两个驱动包缺一个就是 D2(见下节「陷阱」),两个都在就是**根因 G**。
 
 **现象**:AR 一拉就报 40,进程看**一切正常**——垫片照常工作、eNSP 不崩、也不卡进度条,只是设备起不来。
 
@@ -267,6 +267,72 @@ Get-NetTCPConnection | ? { $_.LocalPort -eq 56789 -or $_.RemotePort -eq 56789 } 
 
 **预防**:启用此类工具时确认 host-only 网段在绕过列表中。
 
+---
+
+## 根因 G:host-only 网卡名带「#N」后缀(新装机器上也会出现)
+
+**现象**:AR(以及 AC / AP 等真 VM 设备)一启动就报 40,交换机正常;垫片日志全绿(`findMachine` / `clonevm` / `modifyvm` 都成功,失败在随后的 `startvm`)。`eNSP\vboxserver\log\VBoxManage.log` 里是:
+
+```
+VBoxManage.exe: error: Interface ('VirtualBox Host-Only Ethernet Adapter') is not a Host-Only Adapter interface (VERR_INTERNAL_ERROR)
+```
+
+`VBoxManage list hostonlyifs` 里只有 `VirtualBox Host-Only Ethernet Adapter #2`、`#3` 这类带后缀的网卡,没有不带后缀的那一块。
+
+**根因**:eNSP 把网卡名**写死**了,必须逐字等于 `VirtualBox Host-Only Ethernet Adapter`。这个字符串出现在每个设备模板的 `HostOnlyInterface name=`(实况段和 `_Link` 快照段各一份)、`VAR_Plugin.dll`、`NGFW_Plugin.dll`、`eNSP_Client.exe` 里;`eNSP_VBoxServer.exe` 还会拿它执行 `hostonlyif ipconfig "VirtualBox Host-Only Ethernet Adapter" ...`。多一个 `#3` 就对不上。
+
+后缀是 Windows 建网卡时分配的:只有在没有别的网卡记录占着这个描述名时,新网卡才拿到不带后缀的名字。VirtualBox 安装过程中网卡被建过又删过,或者这台机器以前装过、卸过 VirtualBox,都会让新网卡拿到带后缀的名字。
+
+> **重新注册设备(`注册设备.bat`)不会改这个名字。** 本项目早先的诊断与安装提示写的是「重新注册设备(会重写模板中的名字)」,那是错的:`register_vms.ps1` 从不碰网卡名,而且插件里写死的名字也不在模板里。已更正。
+
+**辨别**:
+
+1. `VBoxManage.log` 里是上面那一句 `is not a Host-Only Adapter interface`。
+2. `VBoxManage list hostonlyifs` 没有不带后缀的那一块。
+3. `VBoxDrvInst.exe list` 能列出 `VBoxNetAdp6` 与 `VBoxNetLwf`。缺一个时先按 D2 处理:只装了 `netadp6` 的机器也会出现 `#2`,补上 `netlwf` 后自行恢复。
+4. 环境检查报告第 3 节第 6 层是「匹配 0 / N」,并提示「实际接口里没有名字恰为……的网卡」;第 [9] 节出现 `hostonly-name`。
+
+**修复,情形 1(多数):没有残留记录占着这个名字。** 关闭 eNSP,在管理员命令提示符里运行 `环境检查.bat -Fix hostonly-name`。它做的就是下面这几步,手动执行也一样:
+
+```powershell
+$VB = "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
+& $VB hostonlyif remove "VirtualBox Host-Only Ethernet Adapter #3"   # 每一块带后缀的都删掉
+& $VB hostonlyif create                                              # 看输出里的名字是否已不带 #
+& $VB hostonlyif ipconfig "VirtualBox Host-Only Ethernet Adapter" --ip 192.168.56.1 --netmask 255.255.255.0
+Disable-NetAdapter -InterfaceDescription "VirtualBox Host-Only Ethernet Adapter" -Confirm:$false
+Start-Sleep 5
+Enable-NetAdapter  -InterfaceDescription "VirtualBox Host-Only Ethernet Adapter" -Confirm:$false
+```
+
+之后等 `VBoxSVC.exe` 退出(或在任务管理器里结束它)再打开 eNSP。
+
+- **最后的禁用 / 启用不能省。** 新建网卡后,`startvm` 的报错会从 `VERR_INTERNAL_ERROR` 变成 `VERR_INTNET_FLT_IF_NOT_FOUND`:绑定显示已启用,过滤驱动却还没进入数据路径,与 D1 相同。禁用再启用后才消失。
+- **必须先删再建。** 带后缀的旧网卡还在时新建,只会拿到下一个编号。
+- **删完以后不要反复 `create`。** 每多建一次,编号就往上涨一次。多出来的带后缀网卡不影响 eNSP,用不上就删掉。
+- 你自己的 VirtualBox 虚拟机若绑在被删的网卡上,要改绑到新网卡。
+
+**修复,情形 2:删光重建后名字仍带后缀。** Windows 的网络接口数据库 `HKLM\SYSTEM\CurrentControlSet\Control\NetworkSetup2\Interfaces` 里还留着一条已删除网卡的记录(其 `Kernel\IfDescr` 是不带后缀的名字),占着这个名字。`hostonly-name` 修复遇到这种情况会停下并说明原因,不会继续多建。该键归 TrustedInstaller 所有,管理员默认连读都读不了,本项目不自动处理。手动步骤如下(来自 2026-09-06 一次 VirtualBox 5.2 环境的实测记录;7.2 上尚未遇到这一情形):
+
+1. 取得 `NetworkSetup2` 的读写权限:以 TrustedInstaller 身份运行 `regedit`,或把该键的所有者改为 Administrators 并授予完全控制。
+2. 备份:`reg export "HKLM\SYSTEM\CurrentControlSet\Control\NetworkSetup2\Interfaces" ns2_backup.reg`。
+3. 用 `hostonlyif remove` 删掉全部 host-only 网卡。
+4. 删除 `Interfaces` 下 `Kernel\IfDescr` 含 `VirtualBox Host-Only` 的子键;再删除 `HKLM\SYSTEM\CurrentControlSet\Control\Network\{4D36E972-E325-11CE-BFC1-08002BE10318}\Descriptions` 下名为 `VirtualBox Host-Only Ethernet Adapter` 的值。
+5. **先重启,再建网卡。** 删完记录不重启就 `create`,网卡会建出来、名字也干净,但设备停在 `CM_PROB_FAILED_ADD`,禁用 / 启用、`pnputil /scan-devices` 都救不回来,只能重启;这时再 `create` 又会多出一块 `#2`。
+6. 重启后 `hostonlyif create`,确认名字不带后缀,再按情形 1 配 IP、禁用 / 启用一次。
+
+同一份记录里试过、**无效**的做法:
+
+| 做法 | 结果 |
+|---|---|
+| 改 `Enum\ROOT\NET\<n>\FriendlyName`、Class 键的 `DriverDesc`、`Connection\Name` | `Get-NetAdapter` 显示的名字变了,`VBoxManage list hostonlyifs` 不变 |
+| 只改 `Descriptions` 索引 | 重建时被写回 |
+| 有残留记录时删网卡重建、只重启不删记录、再多建一块指望补上编号 | 照样带后缀,编号只增不减 |
+| 改 eNSP 二进制里的字符串去迁就 `#2` | 不可行:该字符串后面只有 3 个空闲字节,放不下 `" #2"` |
+
+把模板里的 `HostOnlyInterface name=` 改成带后缀的名字去迁就网卡,也不建议:插件与 `eNSP_VBoxServer.exe` 里写死的仍是出厂名,这样改能否工作没有验证过。
+
+**诊断记录(2026-10-14,Windows 11 家庭版 build 26300 + VBox 7.2.16 + eNSP 1.3.00.100)**:刚装好 VirtualBox、WinPcap、eNSP,没有打开过 eNSP 就运行了 `安装.bat`,安装提示成功,AR 报 40。唯一的 host-only 网卡叫 `#3`,系统里没有隐藏的残留网卡设备。删掉重建后拿到了干净的名字;`startvm` 的报错随即变为 `VERR_INTNET_FLT_IF_NOT_FOUND`,禁用 / 启用该网卡并结束 VBoxSVC 后,AR、Cloud、接口抓包全部正常。安装前检查当时已经打出「匹配 0 / 2」,但诊断没有对应的修复项,提示里还写着「重新注册设备」,安装器于是照常显示成功。此后诊断新增了 `hostonly-name` 修复项,安装结束时的运行时检测会直接提出这一项。
+
 ### 诊断工具能查出多少(边界声明)
 
 报告第 `[3]` 节的**第 7 层**会列出该网段的路由归属,以及系统报出的出接口。**判定只以路由表为准**(那是确定的);`Find-NetRoute` 的答案**只作提示,不作依据**。
@@ -329,3 +395,4 @@ VBoxManage hostonlyif create
 | 40,**绕开 eNSP 直接 `VBoxManage startvm` 也失败**,加固日志 `Error -104 ... (enmWhat=5)`,无被拒模块 | 加固无法创建 VM 子进程 | 根因 E,**偶发,不由 build 决定**(2026-09 更新后曾消失,三天后同 build 复发);失败时 VM 从未启动,重复尝试即可 |
 | 降级 VBox 后 `\Device\VBoxDrvStub` 找不到,或 `Could not find Host Interface Networking driver!`,或 `Nonexistent host networking interface` | 降级卸载留下的三处缺失 | 降级遗留,按序补 VBoxSup → netadp6 → `hostonlyif create` |
 | **只有 FW 起不来**,进度条停在少量 `#`,VM 正常,`infolog0.txt` 报 `control socket.10054` | 代理/VPN/多链路聚合工具接管 host-only 路由 | 根因 F,查 `192.168.56.2:56789` 的源地址 |
+| 40,`VBoxManage.log` 报 `Interface ('VirtualBox Host-Only Ethernet Adapter') is not a Host-Only Adapter interface`,`list hostonlyifs` 只有带 `#N` 的网卡 | 网卡名与 eNSP 写死的名字不符 | 根因 G,`环境检查.bat -Fix hostonly-name`(删掉带后缀的网卡后重建) |

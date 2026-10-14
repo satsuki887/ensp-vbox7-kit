@@ -301,6 +301,17 @@ CE / NE 的日志，虚拟机一启动就退出。常见于刚用过 VirtualBox 
 运行时（`0x800700C1`）、`vboxserver\` 写权限不足（`VERR_FILE_NOT_FOUND`）、版本伪装没写入。启用 Hyper-V / WSL / WSA
 不会导致 error 40：VirtualBox 7.x 会改走 WHP 后端，代价只是启动变慢。
 
+**AR 报 error 40，`VBoxManage.log` 里是 `Interface ('VirtualBox Host-Only Ethernet Adapter') is not a Host-Only Adapter interface`**：
+host-only 网卡的名字带了 `#2`、`#3` 这类后缀。eNSP 把网卡名写死为 `VirtualBox Host-Only Ethernet Adapter`（设备模板、插件、
+`eNSP_VBoxServer.exe` 里都有），差一个字符都认不出。新装的机器上也会出现：VirtualBox 安装过程中网卡被建过又删过，
+或者以前装过 VirtualBox，新网卡就会拿到带后缀的名字。重新注册设备**不会**改这个名字。
+
+处理：关闭 eNSP，在管理员命令提示符里运行 `环境检查.bat -Fix hostonly-name`。它会删掉带后缀的网卡、新建一块、配上
+`192.168.56.1/24`，再禁用 / 启用一次让过滤驱动挂上（最后这步不能省，否则报错会变成 `VERR_INTNET_FLT_IF_NOT_FOUND`）。
+完成后等 `VBoxSVC.exe` 退出再打开 eNSP。手动处理时注意：必须先删再建，删完不要反复 `create`，每多建一次编号就涨一次。
+如果删光重建后名字仍带后缀，是系统里有残留记录占着这个名字，需要改注册表并重启，见
+[`docs/troubleshooting-error40.md`](../docs/troubleshooting-error40.md) 根因 G。
+
 **升级 VirtualBox 后报 error 40，垫片日志也没有异常**：检查 VirtualBox 的 host-only 网络。它有两类独立的故障，现象
 相近，但处理方法不通用（D1 的方法对 D2 无效）。
 

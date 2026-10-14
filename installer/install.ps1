@@ -846,9 +846,10 @@ function Write-EnvReportHostOnly {
     } catch { $problems += ("第 5 层读取失败: " + $_.Exception.Message) }
 
     # --- 第 6 层:模板名 vs 实际接口名 ---
-    # 这一层判的是模板名与实际接口名是否一致(VM 是按 hostonlyadapterN 的名字绑的),
-    # 名字里带 "#2" 本身说明不了什么。旧版用通配符 "Adapter*" 判名字,把带 #2 的
-    # 适配器当成正常的,于是这一类问题从来没被报出来过。
+    # eNSP 只认名字恰为 "VirtualBox Host-Only Ethernet Adapter" 的网卡(设备模板、插件、
+    # eNSP_VBoxServer.exe 里都写死了,见 checks.ps1 的 Get-EnspHostOnlyName)。旧版用
+    # 通配符 "Adapter*" 判名字,把带 #2 的适配器当成正常的,于是这一类问题从来没被
+    # 报出来过。重新注册设备【不会】改这个名字 —— 早先这里的提示写错过。
     try {
         $tplPath = ""
         if ($EnspDir) { $tplPath = Join-Path $EnspDir "vboxserver\AR_Base\AR_Base.vbox" }
@@ -857,10 +858,7 @@ function Write-EnvReportHostOnly {
         } elseif (-not ($tplPath -and (Test-Path $tplPath))) {
             Write-Info "  host-only 第 6 层(模板名比对): 读不到 AR_Base.vbox,本层跳过。"
         } else {
-            $tplNames = @()
-            foreach ($line in (Get-Content -Path $tplPath -ErrorAction SilentlyContinue)) {
-                if ($line -match 'HostOnlyInterface\s+name="([^"]*)"') { $tplNames += $Matches[1] }
-            }
+            $tplNames = @(Get-HostOnlyNamesFromTemplate -Lines @(Get-Content -Path $tplPath -ErrorAction SilentlyContinue))
             if ($tplNames.Count -eq 0) {
                 Write-Info "  host-only 第 6 层(模板名比对): 模板里没有主机专用接口名,无从比对。"
             } else {
@@ -868,7 +866,7 @@ function Write-EnvReportHostOnly {
                 if ($cmp.HasMismatch) {
                     Write-Info ("  host-only 第 6 层(模板名比对): 匹配 {0} / {1}" -f $cmp.MatchedCount, $tplNames.Count)
                     $problems += ("模板里有 " + $cmp.MissingInVBox.Count + " 个接口名在实际接口中不存在:" + ($cmp.MissingInVBox -join " | ")) +
-                                 '。修法是重新注册设备(会重写模板里的名字),而不是把 "#2" 本身当成故障'
+                                 "。设备会报 40;安装结束时的运行时检测会提供修复 hostonly-name(删掉带后缀的网卡后重建)"
                 } else {
                     Write-Info ("  host-only 第 6 层(模板名比对): 一致({0} 个)。" -f $cmp.MatchedCount)
                 }
@@ -885,7 +883,8 @@ function Write-EnvReportHostOnly {
         Write-Warn "    1. VBoxManage list hostonlyifs 看有几块、名字分别是什么"
         Write-Warn "    2. 多余的同名适配器用 VBoxManage hostonlyif remove `"<名字>`" 删除"
         Write-Warn "       (该命令只认名字不认 GUID;同名时多删几次并逐次核对)"
-        Write-Warn "    3. 保证剩下那块名字与设备模板一致、IP 为 192.168.56.1/24"
+        Write-Warn "    3. 保证剩下那块名字恰为 VirtualBox Host-Only Ethernet Adapter(不带 #N)、IP 为 192.168.56.1/24"
+        Write-Warn "       (只有带后缀的那种时:环境检查.bat -Fix hostonly-name 会删掉重建)"
         Write-Warn "    4. VBoxManage list dhcpservers 确认 DHCP 的 NetworkName 指向该适配器"
         Write-Warn "       (本自检不含 DHCP 绑定,须手工核对)"
         Write-Warn "  另:设备起不来时先确认没有杀不掉的僵尸 eNSP_VBoxServer 进程,有就重启。"

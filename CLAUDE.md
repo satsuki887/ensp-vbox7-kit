@@ -47,6 +47,9 @@ powershell -File tools\dev\installer-tests\test_svrp_nic.ps1 :: 第 7 步 SVRP �
   `patches/patch_pcap_version.py` 两处都改（见 `cloud-npcap.md`）。
 - CE/CX/NE（SVRP）关机卡死崩溃：VirtualBox 7.x virtio-net 对未连接（null）网卡的发送死循环，与垫片无关；
   安装器第 7 步把这类网卡改挂空 intnet（`ensp-unused-*`）规避。
+- host-only 网卡名必须**逐字**是 `VirtualBox Host-Only Ethernet Adapter`：eNSP 在模板、`VAR_Plugin.dll`、`NGFW_Plugin.dll`、
+  `eNSP_Client.exe`、`eNSP_VBoxServer.exe` 里都写死了它。带 `#N` 后缀 → `startvm` 报 `is not a Host-Only Adapter interface` → error 40。
+  重新注册设备不改这个名字；修法是删掉带后缀的网卡后重建（诊断修复项 `hostonly-name`，见 troubleshooting-error40.md 根因 G）。
 - VBoxSVC 每用户一个，权限由第一个拉起它的客户端决定。普通权限的 VBoxSVC 在跑时，CE/NE 启动超时
   （日志写不进 Program Files）。**在本机跑 VBoxManage 实验后要等 VBoxSVC 退出再让用户开 eNSP。**
 
